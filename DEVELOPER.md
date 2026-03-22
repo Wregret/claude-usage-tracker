@@ -4,67 +4,68 @@
 
 ```
 claude-usage-tracker/
-├── manifest.json                 # Chrome MV3 manifest
+├── manifest.json                      # Chrome MV3 manifest
 ├── background/
-│   └── service-worker.js         # Message relay, caching, periodic refresh
+│   └── service-worker.js              # Message relay, caching, periodic refresh
 ├── content/
-│   └── content-script.js         # API calls, org discovery
+│   ├── content-script.js              # Chat usage (claude.ai)
+│   └── console-content-script.js      # API usage (console.anthropic.com)
 ├── popup/
-│   ├── popup.html                # Usage bars, rate limits, history chart
-│   ├── popup.css                 # Styles (percentage bars, color coding)
-│   └── popup.js                  # Data fetching, rendering, chart
+│   ├── popup.html                     # Tabbed UI: Chat + API
+│   ├── popup.css                      # Styles (tabs, bars, tables)
+│   └── popup.js                       # Dual-pipeline rendering
 ├── lib/
-│   ├── storage.js                # Schema documentation
-│   └── chart.min.js              # Chart.js v4 UMD (vendored)
+│   ├── storage.js                     # Schema documentation
+│   └── chart.min.js                   # Chart.js v4 UMD (vendored)
 ├── utils/
-│   └── time.js                   # Shared formatting helpers
-├── icons/                        # 16/48/128px PNGs
+│   └── time.js                        # Shared formatting helpers
+├── icons/                             # 16/48/128px PNGs
 ├── tests/
-│   └── test_extension.py         # Validation suite
+│   └── test_extension.py              # Validation suite
 ├── .gitignore
-├── LICENSE                       # MIT
+├── LICENSE                            # MIT
 ├── README.md
 └── DEVELOPER.md
 ```
 
 ## Architecture
 
+Two parallel data pipelines share the same service worker relay pattern:
+
 ```
-Popup                          Service Worker                Content Script (on claude.ai)
-  │                                │                              │
-  │── POPUP_GET_CACHED ──────────▸│                              │
-  │◂── cached data ──────────────│                              │
-  │                                │                              │
-  │── POPUP_FETCH_USAGE ─────────▸│                              │
-  │                                │── FETCH_USAGE ─────────────▸│
-  │                                │                              │── fetch(/api/organizations/...)
-  │                                │                              │── fetch(/api/.../usage)
-  │                                │                              │── fetch(/api/.../rate_limit_status)
-  │                                │◂── { usage, rateLimit } ────│
-  │◂── { usage, rateLimit } ──────│                              │
-  │                                │── cache to storage           │
-  │                                │── save daily snapshot        │
-  │                                │                              │
-  │                                │   (on page load)             │
-  │                                │◂── ORG_ID_DISCOVERED ───────│
+Popup                          Service Worker                Content Scripts
+  │                                │
+  │── POPUP_FETCH_USAGE ─────────▸│                          claude.ai tab
+  │                                │── FETCH_USAGE ─────────▸│── fetch(/api/.../usage)
+  │                                │◂── { usage, org } ──────│
+  │◂── chat data ─────────────────│
+  │                                │
+  │── POPUP_FETCH_API_USAGE ─────▸│                          console.anthropic.com tab
+  │                                │── FETCH_API_USAGE ─────▸│── fetch(/api/.../usage)
+  │                                │◂── { billing, org } ────│
+  │◂── api data ──────────────────│
 ```
 
 **Key design decisions:**
-- **Content script fetches the API** (not the service worker) because it runs on claude.ai's origin with the user's cookies.
-- **Service worker is a relay + cache** — it never calls fetch() itself.
-- **Programmatic injection** — if the content script isn't loaded (tab was open before extension install), the service worker injects it via `chrome.scripting.executeScript`.
-- **No importScripts** — the service worker inlines its minimal dependencies. This avoids MV3 path resolution bugs.
-- **Multiple API endpoints tried** — `Promise.allSettled` tries org info, usage, rate limits, and settings in parallel.
-- **Sender validation** — the service worker only accepts messages from its own extension ID.
+- **Two content scripts** — one per origin. Each fetches with the user's session cookies.
+- **Service worker is a relay + cache** — never calls fetch() itself. Uses a shared `PIPELINES` config to avoid duplicating logic.
+- **Programmatic injection** — injects content scripts via `chrome.scripting.executeScript` if not already loaded.
+- **No importScripts** — all dependencies inlined in the service worker.
+- **Sender validation** — only accepts messages from its own extension ID.
+- **Tabbed popup** — Chat and API usage in separate tabs, fetched in parallel.
 
 ## Storage Schema
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `orgId` | string | Discovered organization UUID |
-| `cachedUsage` | object | Last fetched usage response |
-| `lastFetchTime` | number | Epoch ms of last successful fetch |
-| `usageHistory` | object | `{ "YYYY-MM-DD": snapshot }` for trend chart (90-day retention) |
+| Key | Type | Pipeline | Description |
+|-----|------|----------|-------------|
+| `orgId` | string | Chat | claude.ai organization UUID |
+| `cachedUsage` | object | Chat | Last fetched chat usage data |
+| `lastFetchTime` | number | Chat | Epoch ms of last chat fetch |
+| `usageHistory` | object | Chat | `{ "YYYY-MM-DD": snapshot }` (90-day retention) |
+| `apiOrgId` | string | API | console.anthropic.com org UUID |
+| `cachedApiUsage` | object | API | Last fetched API usage data |
+| `lastApiFetchTime` | number | API | Epoch ms of last API fetch |
+| `apiUsageHistory` | object | API | `{ "YYYY-MM-DD": snapshot }` (90-day retention) |
 
 ## Testing
 
@@ -74,11 +75,12 @@ python3 tests/test_extension.py
 
 | Suite | What it validates |
 |-------|-------------------|
-| TestManifest | MV3 schema, permissions (incl. scripting), file refs, no `type: module` |
-| TestServiceWorker | No importScripts, message handling, caching, history, alarms, script injection fallback, sender validation |
-| TestContentScript | Org discovery, API fetching, credentials |
-| TestPopup | Usage bars, color coding, refresh, error handling, chart, XSS escaping |
-| TestMessageContract | All message types match across content ↔ SW ↔ popup |
+| TestManifest | MV3 schema, permissions, host_permissions for both origins |
+| TestServiceWorker | Dual pipelines, caching, history, alarms, sender validation |
+| TestContentScript | Chat: org discovery, API fetching, credentials |
+| TestConsoleContentScript | API: org discovery, billing fetching, credentials |
+| TestPopup | Tabs, dual rendering, bars, models table, charts, XSS escaping |
+| TestMessageContract | All message types match across all files |
 | TestUtils, TestIcons, TestFileStructure, TestPrivacy | Helpers, icons, files, no external requests |
 
 ## Maintenance
@@ -86,13 +88,14 @@ python3 tests/test_extension.py
 ### When claude.ai changes its API
 
 1. Open DevTools Network tab on claude.ai/settings/usage.
-2. Identify the API calls that return usage data.
-3. Update `content-script.js`:
-   - `fetchUsageData()` — add new endpoint paths
-   - `discoverOrgId()` — if org ID location changed
-4. Update `popup.js`:
-   - `extractUsageBars()` — add parsing for the new response shape
-   - `extractPlanName()` in `utils/time.js` — if plan info moved
+2. Update `content/content-script.js`: `fetchUsageData()`, `discoverOrgId()`.
+3. Update `popup/popup.js`: `extractChatUsageBars()`.
+
+### When console.anthropic.com changes its API
+
+1. Open DevTools Network tab on console.anthropic.com/settings/billing.
+2. Update `content/console-content-script.js`: `fetchApiUsageData()`, `discoverOrgId()`.
+3. Update `popup/popup.js`: `extractApiUsageBars()`, `renderApiModels()`.
 
 ### Updating Chart.js
 
@@ -104,7 +107,9 @@ curl -L "https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js" -o lib/c
 
 | What | File | Functions |
 |------|------|-----------|
-| API endpoints | `content/content-script.js` | `fetchUsageData()`, `discoverOrgId()` |
-| Response parsing | `popup/popup.js` | `extractUsageBars()`, `renderUsageBars()` |
-| Caching | `background/service-worker.js` | `getCachedUsageData()`, `saveUsageSnapshot()` |
+| Chat endpoints | `content/content-script.js` | `fetchUsageData()`, `discoverOrgId()` |
+| API endpoints | `content/console-content-script.js` | `fetchApiUsageData()`, `discoverOrgId()` |
+| Chat rendering | `popup/popup.js` | `renderChatData()`, `extractChatUsageBars()` |
+| API rendering | `popup/popup.js` | `renderApiData()`, `extractApiUsageBars()`, `renderApiModels()` |
+| Pipeline relay | `background/service-worker.js` | `fetchViaContentScript()`, `PIPELINES` |
 | Theme/colors | `popup/popup.css` | `:root` variables, `.bar-ok/warning/danger` |

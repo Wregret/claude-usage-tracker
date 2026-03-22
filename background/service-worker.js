@@ -3,11 +3,9 @@
  *
  * Self-contained (no importScripts).
  *
- * Responsibilities:
- * - Relay FETCH_USAGE requests from popup to the content script
- * - Cache usage data in chrome.storage.local
- * - Store daily usage snapshots for trend tracking
- * - Periodically refresh usage data via alarm
+ * Two parallel data pipelines:
+ * - Chat usage: popup ↔ service worker ↔ content script on claude.ai
+ * - API usage:  popup ↔ service worker ↔ content script on console.anthropic.com
  */
 
 // ═══════════════════════════════════════════════════════════════
@@ -39,9 +37,7 @@ chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: REFRESH_INTERVAL_MIN });
 // ═══════════════════════════════════════════════════════════════
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Only accept messages from this extension
   if (sender.id !== chrome.runtime.id) return false;
-
   handleMessage(message, sender).then(sendResponse);
   return true;
 });
@@ -49,8 +45,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message, sender) {
   switch (message.type) {
 
+    // ─── Chat (claude.ai) ─────────────────────────────
     case 'ORG_ID_DISCOVERED':
-      // Validate org ID format before storing
       if (!message.orgId || !ORG_ID_PATTERN.test(message.orgId)) {
         return { ok: false, error: 'Invalid org ID format' };
       }
@@ -58,13 +54,30 @@ async function handleMessage(message, sender) {
       return { ok: true };
 
     case 'POPUP_FETCH_USAGE':
-      return await fetchUsageViaContentScript();
+      return await fetchViaContentScript('chat');
 
     case 'POPUP_GET_CACHED':
-      return await getCachedUsageData();
+      return await getCached('chat');
 
     case 'POPUP_GET_HISTORY':
-      return await getUsageHistory();
+      return await getHistory('chat');
+
+    // ─── API (console.anthropic.com) ──────────────────
+    case 'API_ORG_ID_DISCOVERED':
+      if (!message.orgId || !ORG_ID_PATTERN.test(message.orgId)) {
+        return { ok: false, error: 'Invalid org ID format' };
+      }
+      await chrome.storage.local.set({ apiOrgId: message.orgId });
+      return { ok: true };
+
+    case 'POPUP_FETCH_API_USAGE':
+      return await fetchViaContentScript('api');
+
+    case 'POPUP_GET_CACHED_API':
+      return await getCached('api');
+
+    case 'POPUP_GET_API_HISTORY':
+      return await getHistory('api');
 
     default:
       return { ok: false, error: 'Unknown message type' };
@@ -77,104 +90,142 @@ async function handleMessage(message, sender) {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== REFRESH_ALARM) return;
-  await fetchUsageViaContentScript();
+  await Promise.allSettled([
+    fetchViaContentScript('chat'),
+    fetchViaContentScript('api')
+  ]);
 });
 
 // ═══════════════════════════════════════════════════════════════
-// Data Management
+// Pipeline Configuration
+// ═══════════════════════════════════════════════════════════════
+
+const PIPELINES = {
+  chat: {
+    tabUrl: 'https://claude.ai/*',
+    messageType: 'FETCH_USAGE',
+    scriptFile: 'content/content-script.js',
+    cacheKey: 'cachedUsage',
+    timeKey: 'lastFetchTime',
+    historyKey: 'usageHistory',
+    noTabError: 'No claude.ai tab open. Open claude.ai to fetch usage data.',
+  },
+  api: {
+    tabUrl: 'https://console.anthropic.com/*',
+    messageType: 'FETCH_API_USAGE',
+    scriptFile: 'content/console-content-script.js',
+    cacheKey: 'cachedApiUsage',
+    timeKey: 'lastApiFetchTime',
+    historyKey: 'apiUsageHistory',
+    noTabError: 'No console.anthropic.com tab open. Open the Anthropic console to fetch API usage.',
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// Data Management (shared by both pipelines)
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Ask the content script on an active claude.ai tab to fetch usage data.
- * If the content script isn't loaded, injects it programmatically.
+ * Fetch usage data via a content script on the appropriate tab.
+ * @param {'chat'|'api'} pipeline
  * @returns {Promise<Object>}
  */
-async function fetchUsageViaContentScript() {
+async function fetchViaContentScript(pipeline) {
+  const cfg = PIPELINES[pipeline];
   try {
-    const tabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
+    const tabs = await chrome.tabs.query({ url: cfg.tabUrl });
     if (tabs.length === 0) {
-      const cached = await getCachedUsageData();
+      const cached = await getCached(pipeline);
       if (cached && cached.ok) return cached;
-      return { ok: false, error: 'No claude.ai tab open. Open claude.ai to fetch usage data.' };
+      return { ok: false, error: cfg.noTabError };
     }
 
     const tabId = tabs[0].id;
     let response;
 
     try {
-      response = await chrome.tabs.sendMessage(tabId, { type: 'FETCH_USAGE' });
+      response = await chrome.tabs.sendMessage(tabId, { type: cfg.messageType });
     } catch (e) {
       // Content script not loaded — inject and retry
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
-          files: ['content/content-script.js']
+          files: [cfg.scriptFile]
         });
         await new Promise(r => setTimeout(r, 500));
-        response = await chrome.tabs.sendMessage(tabId, { type: 'FETCH_USAGE' });
+        response = await chrome.tabs.sendMessage(tabId, { type: cfg.messageType });
       } catch (retryErr) {
-        return { ok: false, error: 'Could not reach claude.ai. Try refreshing the page.' };
+        return { ok: false, error: 'Could not reach the page. Try refreshing it.' };
       }
     }
 
     if (response && response.ok) {
       await chrome.storage.local.set({
-        cachedUsage: response,
-        lastFetchTime: Date.now()
+        [cfg.cacheKey]: response,
+        [cfg.timeKey]: Date.now()
       });
-      await saveUsageSnapshot(response);
+      await saveSnapshot(pipeline, response);
     }
     return response || { ok: false, error: 'No response from content script' };
   } catch (e) {
-    return { ok: false, error: 'Could not reach claude.ai. Try refreshing the page.' };
+    return { ok: false, error: 'Could not reach the page. Try refreshing it.' };
   }
 }
 
 /**
- * Get cached usage data from storage.
+ * Get cached data from storage.
+ * @param {'chat'|'api'} pipeline
  * @returns {Promise<Object>}
  */
-async function getCachedUsageData() {
-  const { cachedUsage, lastFetchTime } = await chrome.storage.local.get(['cachedUsage', 'lastFetchTime']);
-  if (cachedUsage) {
-    cachedUsage.fromCache = true;
-    cachedUsage.cacheAge = Date.now() - (lastFetchTime || 0);
+async function getCached(pipeline) {
+  const cfg = PIPELINES[pipeline];
+  const data = await chrome.storage.local.get([cfg.cacheKey, cfg.timeKey]);
+  const cached = data[cfg.cacheKey];
+  if (cached) {
+    cached.fromCache = true;
+    cached.cacheAge = Date.now() - (data[cfg.timeKey] || 0);
   }
-  return cachedUsage || { ok: false, error: 'No cached data. Open claude.ai to fetch usage.' };
+  return cached || { ok: false, error: 'No cached data available.' };
 }
 
 /**
- * Save a daily usage snapshot for history tracking.
- * Keeps last 90 days.
- * @param {Object} usageResponse
+ * Save a daily snapshot for history tracking. Keeps last 90 days.
+ * @param {'chat'|'api'} pipeline
+ * @param {Object} response
  */
-async function saveUsageSnapshot(usageResponse) {
+async function saveSnapshot(pipeline, response) {
+  const cfg = PIPELINES[pipeline];
   const today = getDateString(new Date());
-  const { usageHistory = {} } = await chrome.storage.local.get('usageHistory');
+  const stored = await chrome.storage.local.get(cfg.historyKey);
+  const history = stored[cfg.historyKey] || {};
 
-  usageHistory[today] = {
+  history[today] = {
     timestamp: Date.now(),
-    usage: usageResponse.usage,
-    rateLimit: usageResponse.rateLimit,
-    organization: usageResponse.organization
+    usage: response.usage,
+    rateLimit: response.rateLimit,
+    billing: response.billing,
+    limits: response.limits,
+    organization: response.organization
   };
 
   // Prune entries older than 90 days
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - 90);
   const cutoffStr = getDateString(cutoff);
-  for (const date of Object.keys(usageHistory)) {
-    if (date < cutoffStr) delete usageHistory[date];
+  for (const date of Object.keys(history)) {
+    if (date < cutoffStr) delete history[date];
   }
 
-  await chrome.storage.local.set({ usageHistory });
+  await chrome.storage.local.set({ [cfg.historyKey]: history });
 }
 
 /**
- * Get usage history snapshots.
+ * Get history snapshots.
+ * @param {'chat'|'api'} pipeline
  * @returns {Promise<Object>}
  */
-async function getUsageHistory() {
-  const { usageHistory = {} } = await chrome.storage.local.get('usageHistory');
-  return { ok: true, history: usageHistory };
+async function getHistory(pipeline) {
+  const cfg = PIPELINES[pipeline];
+  const stored = await chrome.storage.local.get(cfg.historyKey);
+  return { ok: true, history: stored[cfg.historyKey] || {} };
 }

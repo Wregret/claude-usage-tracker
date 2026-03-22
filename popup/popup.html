@@ -15,68 +15,115 @@
     </button>
   </header>
 
-  <!-- Status bar: last updated + loading indicator -->
+  <!-- Tab switcher -->
+  <div class="section-tabs">
+    <button class="tab-btn active" data-section="chat">Chat</button>
+    <button class="tab-btn" data-section="api">API</button>
+  </div>
+
+  <!-- Status bar -->
   <div class="status-bar">
     <span id="status-text">Loading...</span>
   </div>
 
-  <!-- Main content area -->
+  <!-- Main content -->
   <div id="content">
 
-    <!-- Error state (hidden by default) -->
-    <div id="error-card" class="card error-card hidden">
-      <div class="card-body center">
-        <p class="error-text" id="error-text"></p>
-        <p class="muted">Make sure you have a <strong>claude.ai</strong> tab open and are logged in.</p>
-      </div>
-    </div>
+    <!-- ═══ Chat Usage Tab ═══ -->
+    <div id="chat-section" class="tab-content">
 
-    <!-- Usage Overview: the main percentage bar(s) -->
-    <div id="usage-section" class="hidden">
-
-      <!-- Primary usage bar -->
-      <div class="card">
-        <div class="card-header">
-          <h3>Usage</h3>
-          <span class="plan-badge" id="plan-badge"></span>
+      <div id="chat-error-card" class="card error-card hidden">
+        <div class="card-body center">
+          <p class="error-text" id="chat-error-text"></p>
+          <p class="muted">Make sure you have a <strong>claude.ai</strong> tab open and are logged in.</p>
         </div>
-        <div class="card-body">
-          <div id="usage-bars">
-            <!-- Usage bars are dynamically rendered here -->
+      </div>
+
+      <div id="chat-usage-section" class="hidden">
+        <div class="card">
+          <div class="card-header">
+            <h3>Usage</h3>
+            <span class="plan-badge hidden" id="chat-plan-badge"></span>
+          </div>
+          <div class="card-body">
+            <div id="chat-usage-bars"></div>
+          </div>
+        </div>
+
+        <div class="card hidden" id="chat-rate-limit-card">
+          <div class="card-header"><h3>Rate Limits</h3></div>
+          <div class="card-body" id="chat-rate-limit-body"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header clickable" id="chat-details-toggle">
+            <h3>Details</h3>
+            <span class="toggle-arrow" id="chat-toggle-arrow">&#x25B6;</span>
+          </div>
+          <div class="card-body hidden" id="chat-details-body">
+            <pre id="chat-details-json" class="details-json"></pre>
           </div>
         </div>
       </div>
 
-      <!-- Rate limit status -->
-      <div class="card" id="rate-limit-card">
-        <div class="card-header">
-          <h3>Rate Limits</h3>
-        </div>
-        <div class="card-body" id="rate-limit-body">
-          <!-- Rate limit details rendered here -->
-        </div>
-      </div>
-
-      <!-- Raw details (collapsible) -->
-      <div class="card">
-        <div class="card-header clickable" id="details-toggle">
-          <h3>Details</h3>
-          <span class="toggle-arrow" id="toggle-arrow">&#x25B6;</span>
-        </div>
-        <div class="card-body hidden" id="details-body">
-          <pre id="details-json" class="details-json"></pre>
+      <div id="chat-history-section" class="hidden">
+        <div class="card">
+          <div class="card-header"><h3>Usage History</h3></div>
+          <div class="card-body chart-container">
+            <canvas id="chat-history-chart"></canvas>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Usage history chart -->
-    <div id="history-section" class="hidden">
-      <div class="card">
-        <div class="card-header">
-          <h3>Usage History</h3>
+    <!-- ═══ API Usage Tab ═══ -->
+    <div id="api-section" class="tab-content hidden">
+
+      <div id="api-error-card" class="card error-card hidden">
+        <div class="card-body center">
+          <p class="error-text" id="api-error-text"></p>
+          <p class="muted">Make sure you have a <strong>console.anthropic.com</strong> tab open and are logged in.</p>
         </div>
-        <div class="card-body chart-container">
-          <canvas id="history-chart"></canvas>
+      </div>
+
+      <div id="api-usage-section" class="hidden">
+        <div class="card">
+          <div class="card-header">
+            <h3>API Spend</h3>
+            <span class="plan-badge hidden" id="api-plan-badge"></span>
+          </div>
+          <div class="card-body">
+            <div id="api-usage-bars"></div>
+          </div>
+        </div>
+
+        <div class="card hidden" id="api-models-card">
+          <div class="card-header"><h3>By Model</h3></div>
+          <div class="card-body" id="api-models-body"></div>
+        </div>
+
+        <div class="card hidden" id="api-rate-limit-card">
+          <div class="card-header"><h3>Rate Limits</h3></div>
+          <div class="card-body" id="api-rate-limit-body"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header clickable" id="api-details-toggle">
+            <h3>Details</h3>
+            <span class="toggle-arrow" id="api-toggle-arrow">&#x25B6;</span>
+          </div>
+          <div class="card-body hidden" id="api-details-body">
+            <pre id="api-details-json" class="details-json"></pre>
+          </div>
+        </div>
+      </div>
+
+      <div id="api-history-section" class="hidden">
+        <div class="card">
+          <div class="card-header"><h3>API Usage History</h3></div>
+          <div class="card-body chart-container">
+            <canvas id="api-history-chart"></canvas>
+          </div>
         </div>
       </div>
     </div>

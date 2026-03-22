@@ -16,6 +16,16 @@ function formatTokens(count) {
 }
 
 /**
+ * Format a dollar amount: "$12.50", "$0.00".
+ * @param {number} amount
+ * @returns {string}
+ */
+function formatCurrency(amount) {
+  if (typeof amount !== 'number') return '$0.00';
+  return '$' + amount.toFixed(2);
+}
+
+/**
  * Extract plan name from usage data.
  * Searches multiple possible locations in the API response.
  * @param {Object} data - Usage data from content script

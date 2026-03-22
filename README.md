@@ -1,26 +1,31 @@
 # Claude Usage Tracker
 
-A Chrome extension that shows your **claude.ai usage limits** at a glance — the same info from `claude.ai/settings/usage`, accessible with one click from your toolbar.
+A Chrome extension that shows your **claude.ai chat usage** and **Anthropic API usage** at a glance — no need to visit settings pages.
 
 ## Features
 
-- **Usage Percentage Bar** — See how much of your limit you've consumed, color-coded green/yellow/red.
+- **Chat Usage Tab** — 5-hour and 7-day utilization bars from claude.ai, color-coded green/yellow/red.
+- **API Usage Tab** — Spend, model breakdown, and rate limits from console.anthropic.com.
 - **Plan Info** — Shows your current plan (Free, Pro, Team, etc.).
-- **Rate Limit Status** — Remaining messages, reset times.
-- **Auto-Refresh** — Data refreshes every 5 minutes while a claude.ai tab is open.
+- **Auto-Refresh** — Data refreshes every 5 minutes while relevant tabs are open.
 - **Manual Refresh** — Click the refresh button anytime.
-- **Usage History Chart** — Track your daily usage percentage over time.
+- **Usage History Charts** — Track daily usage trends over time (separate for chat and API).
 - **Raw Details** — Collapsible section showing the full API response data.
 - **Privacy** — All data stays local. No external network requests.
 
 ## How It Works
 
-The extension runs a content script on claude.ai that:
-1. **Discovers your organization ID** by intercepting API calls (every claude.ai API URL contains it).
-2. **Fetches usage data** from claude.ai's internal API endpoints (same ones the settings page uses).
-3. **Sends the data to the popup** for display.
+The extension runs content scripts on two sites:
 
-Because the content script runs in the page context, your session cookies are automatically included — no separate login needed.
+**Chat usage** (claude.ai):
+1. Discovers your organization ID by fetching the organizations API.
+2. Fetches usage data from claude.ai's internal API endpoints.
+
+**API usage** (console.anthropic.com):
+1. Discovers your workspace/org ID on the Anthropic console.
+2. Fetches billing, usage, and rate limit data.
+
+Both use your existing session cookies — no API keys or separate login needed.
 
 ---
 
@@ -41,9 +46,10 @@ Because the content script runs in the page context, your session cookies are au
 
 ### First Use
 
-1. Open [claude.ai](https://claude.ai) in a tab (you must be logged in).
-2. Click the extension icon — your usage data should appear within a few seconds.
-3. If you see an error, try sending a message on claude.ai first (this helps the extension discover your organization ID), then click the refresh button.
+1. Open [claude.ai](https://claude.ai) in a tab (you must be logged in) for chat usage.
+2. Open [console.anthropic.com](https://console.anthropic.com) in a tab (logged in) for API usage.
+3. Click the extension icon — switch between **Chat** and **API** tabs.
+4. If you see an error, try refreshing the relevant page, then click the refresh button.
 
 ---
 
@@ -72,7 +78,7 @@ Because the content script runs in the page context, your session cookies are au
 ## Privacy
 
 - All data stored locally in `chrome.storage.local`.
-- The extension only communicates with `claude.ai` (same-origin API calls via the content script).
+- The extension only communicates with `claude.ai` and `console.anthropic.com` (same-origin API calls via content scripts).
 - No data is sent to any third-party server.
 - No external scripts loaded.
 

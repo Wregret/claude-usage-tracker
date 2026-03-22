@@ -73,6 +73,37 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* ─── Tab Switcher ─────────────────────────────────────────── */
+
+.section-tabs {
+  display: flex;
+  background: var(--card-bg);
+  border-bottom: 2px solid var(--border);
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: color 0.2s, border-color 0.2s;
+  margin-bottom: -2px;
+}
+
+.tab-btn.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
 /* ─── Status Bar ────────────────────────────────────────────── */
 
 .status-bar {
@@ -275,6 +306,36 @@ body {
 .muted {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+/* ─── Model Breakdown Table ────────────────────────────────── */
+
+.model-table {
+  width: 100%;
+  font-size: 11px;
+  border-collapse: collapse;
+}
+
+.model-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.model-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.model-table td.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.model-table tr:last-child td {
+  border-bottom: none;
 }
 
 ::-webkit-scrollbar { width: 6px; }

@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Claude Usage Tracker",
-  "version": "2.0.0",
-  "description": "See your claude.ai usage limits and token consumption at a glance — no need to visit the settings page.",
+  "version": "3.0.0",
+  "description": "See your claude.ai chat usage and Anthropic API usage at a glance.",
   "permissions": ["storage", "alarms", "tabs", "scripting"],
-  "host_permissions": ["https://claude.ai/*"],
+  "host_permissions": ["https://claude.ai/*", "https://console.anthropic.com/*"],
   "background": {
     "service_worker": "background/service-worker.js"
   },
@@ -12,6 +12,11 @@
     {
       "matches": ["https://claude.ai/*"],
       "js": ["content/content-script.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://console.anthropic.com/*"],
+      "js": ["content/console-content-script.js"],
       "run_at": "document_idle"
     }
   ],
