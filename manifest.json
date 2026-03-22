@@ -3,7 +3,7 @@
   "name": "Claude Usage Tracker",
   "version": "2.0.0",
   "description": "See your claude.ai usage limits and token consumption at a glance — no need to visit the settings page.",
-  "permissions": ["storage", "alarms", "tabs"],
+  "permissions": ["storage", "alarms", "tabs", "scripting"],
   "host_permissions": ["https://claude.ai/*"],
   "background": {
     "service_worker": "background/service-worker.js"

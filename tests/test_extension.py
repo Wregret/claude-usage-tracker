@@ -43,10 +43,13 @@ class TestManifest(unittest.TestCase):
         self.assertIn("alarms", perms)
 
     def test_no_unnecessary_permissions(self):
-        """tabs permission was removed — not needed for this design."""
         perms = set(self.m["permissions"])
-        allowed = {"storage", "alarms", "tabs", "activeTab"}
+        allowed = {"storage", "alarms", "tabs", "activeTab", "scripting"}
         self.assertEqual(perms - allowed, set())
+
+    def test_has_scripting_permission(self):
+        """Needed to inject content script into already-open tabs."""
+        self.assertIn("scripting", self.m["permissions"])
 
     def test_host_permissions(self):
         self.assertTrue(any("claude.ai" in h for h in self.m.get("host_permissions", [])))
@@ -140,6 +143,10 @@ class TestServiceWorker(unittest.TestCase):
 
     def test_has_message_listener(self):
         self.assertIn("chrome.runtime.onMessage.addListener", self.code)
+
+    def test_injects_content_script_on_failure(self):
+        """Must fall back to chrome.scripting.executeScript if content script isn't loaded."""
+        self.assertIn("chrome.scripting.executeScript", self.code)
 
     def test_balanced_braces(self):
         self.assertEqual(self.code.count('{'), self.code.count('}'))

@@ -226,11 +226,24 @@
     }
 
     // ─── From usage data ─────────────────────────────
-    if (data.usage && bars.length === 0) {
+    if (data.usage) {
       const u = data.usage;
 
-      // Token-based usage
-      if (typeof u.total_tokens === 'number' && typeof u.token_limit === 'number') {
+      // Shape: { five_hour: { utilization: 67, resets_at: "..." }, seven_day: { ... }, ... }
+      // Walk the usage object for entries with a "utilization" field (0-100 percentage)
+      for (const [key, val] of Object.entries(u)) {
+        if (typeof val === 'object' && val !== null && typeof val.utilization === 'number') {
+          bars.push({
+            label: formatUsageLabel(key),
+            percentage: val.utilization,
+            valueText: `${Math.round(val.utilization)}%`,
+            detail: val.resets_at ? `Resets ${formatResetTime(val.resets_at)}` : null
+          });
+        }
+      }
+
+      // Fallback: token-based usage
+      if (bars.length === 0 && typeof u.total_tokens === 'number' && typeof u.token_limit === 'number') {
         const pct = u.token_limit > 0 ? (u.total_tokens / u.token_limit) * 100 : 0;
         bars.push({
           label: 'Token Usage',
@@ -240,8 +253,8 @@
         });
       }
 
-      // Message-based usage
-      if (typeof u.message_count === 'number' && typeof u.message_limit === 'number') {
+      // Fallback: message-based usage
+      if (bars.length === 0 && typeof u.message_count === 'number' && typeof u.message_limit === 'number') {
         const pct = u.message_limit > 0 ? (u.message_count / u.message_limit) * 100 : 0;
         bars.push({
           label: 'Messages',
@@ -251,8 +264,8 @@
         });
       }
 
-      // Generic: walk the usage object for patterns
-      if (bars.length === 0 && typeof u === 'object') {
+      // Fallback: generic { used, limit } pattern
+      if (bars.length === 0) {
         for (const [key, val] of Object.entries(u)) {
           if (typeof val === 'object' && val !== null && 'used' in val && 'limit' in val) {
             const pct = val.limit > 0 ? (val.used / val.limit) * 100 : 0;
@@ -418,15 +431,25 @@
    */
   function extractSnapshotValue(snap) {
     if (!snap) return 0;
+
+    // Primary: usage.five_hour.utilization (the most relevant short-term metric)
+    const u = snap.usage || {};
+    if (u.five_hour && typeof u.five_hour.utilization === 'number') {
+      return u.five_hour.utilization;
+    }
+    // Fallback: first entry with utilization
+    for (const val of Object.values(u)) {
+      if (typeof val === 'object' && val !== null && typeof val.utilization === 'number') {
+        return val.utilization;
+      }
+    }
+
+    // Legacy fallbacks
     const rl = snap.rateLimit || {};
     if (typeof rl.percentage_used === 'number') return rl.percentage_used;
     if (typeof rl.messages_remaining === 'number' && typeof rl.messages_limit === 'number') {
       const used = rl.messages_limit - rl.messages_remaining;
       return rl.messages_limit > 0 ? (used / rl.messages_limit) * 100 : 0;
-    }
-    if (typeof rl.remaining === 'number' && typeof rl.limit === 'number') {
-      const used = rl.limit - rl.remaining;
-      return rl.limit > 0 ? (used / rl.limit) * 100 : 0;
     }
     return 0;
   }
@@ -493,6 +516,25 @@
 
   function formatLabel(key) {
     return key.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  /**
+   * Format usage keys like "five_hour", "seven_day_opus" into readable labels.
+   */
+  function formatUsageLabel(key) {
+    const wordToNum = { one: '1', two: '2', three: '3', four: '4', five: '5',
+      six: '6', seven: '7', eight: '8', nine: '9', ten: '10', twelve: '12',
+      twenty_four: '24', thirty: '30' };
+    let label = key;
+    // Replace word numbers at the start: "five_hour" → "5_hour"
+    for (const [word, num] of Object.entries(wordToNum)) {
+      if (label.startsWith(word + '_')) {
+        label = num + '_' + label.slice(word.length + 1);
+        break;
+      }
+    }
+    // "5_hour" → "5 Hour", "7_day_opus" → "7 Day Opus"
+    return label.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   }
 
   function escapeHtml(str) {

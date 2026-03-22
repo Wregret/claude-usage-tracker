@@ -103,21 +103,38 @@ async function fetchUsageViaContentScript() {
       return { ok: false, error: 'No claude.ai tab open. Open claude.ai to fetch usage data.' };
     }
 
-    // Send message to the first claude.ai tab's content script
-    const response = await chrome.tabs.sendMessage(tabs[0].id, { type: 'FETCH_USAGE' });
+    const tabId = tabs[0].id;
+    let response;
+
+    try {
+      // Try sending message to the content script
+      response = await chrome.tabs.sendMessage(tabId, { type: 'FETCH_USAGE' });
+    } catch (e) {
+      // Content script not loaded — inject it programmatically and retry
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['content/content-script.js']
+        });
+        // Brief wait for the script to initialize
+        await new Promise(r => setTimeout(r, 500));
+        response = await chrome.tabs.sendMessage(tabId, { type: 'FETCH_USAGE' });
+      } catch (retryErr) {
+        return { ok: false, error: 'Could not reach claude.ai. Try refreshing the page.' };
+      }
+    }
+
     if (response && response.ok) {
       // Cache the fresh data
       await chrome.storage.local.set({
         cachedUsage: response,
         lastFetchTime: Date.now()
       });
-
       // Save a snapshot for history tracking
       await saveUsageSnapshot(response);
     }
     return response || { ok: false, error: 'No response from content script' };
   } catch (e) {
-    // Content script may not be loaded yet
     return { ok: false, error: 'Could not reach claude.ai. Try refreshing the page.' };
   }
 }

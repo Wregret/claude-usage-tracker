@@ -27,12 +27,21 @@ function extractPlanName(data) {
   // Check organization data
   if (data.organization) {
     const org = data.organization;
+    // capabilities array: ["chat", "claude_pro"] → "Pro"
+    if (Array.isArray(org.capabilities)) {
+      const cap = org.capabilities.find(c => /^claude_/i.test(c));
+      if (cap) return cap.replace(/^claude_/i, '').replace(/\b\w/g, c => c.toUpperCase());
+    }
     if (org.plan) return typeof org.plan === 'string' ? org.plan : org.plan.name || null;
     if (org.subscription) {
       const sub = org.subscription;
       return sub.plan || sub.plan_name || sub.type || null;
     }
     if (org.billing) return org.billing.plan || null;
+    if (org.billing_type) {
+      // "stripe_subscription" → "Subscription"
+      return org.billing_type.replace(/^stripe_/i, '').replace(/\b\w/g, c => c.toUpperCase());
+    }
     if (org.rate_limit_tier) return org.rate_limit_tier;
   }
 
