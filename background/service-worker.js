@@ -5,7 +5,7 @@
  *
  * Two parallel data pipelines:
  * - Chat usage: popup ↔ service worker ↔ content script on claude.ai
- * - API usage:  popup ↔ service worker ↔ content script on console.anthropic.com
+ * - API usage:  popup ↔ service worker ↔ content script on platform.claude.com
  */
 
 // ═══════════════════════════════════════════════════════════════
@@ -62,7 +62,7 @@ async function handleMessage(message, sender) {
     case 'POPUP_GET_HISTORY':
       return await getHistory('chat');
 
-    // ─── API (console.anthropic.com) ──────────────────
+    // ─── API (platform.claude.com) ──────────────────
     case 'API_ORG_ID_DISCOVERED':
       if (!message.orgId || !ORG_ID_PATTERN.test(message.orgId)) {
         return { ok: false, error: 'Invalid org ID format' };
@@ -111,13 +111,13 @@ const PIPELINES = {
     noTabError: 'No claude.ai tab open. Open claude.ai to fetch usage data.',
   },
   api: {
-    tabUrl: 'https://console.anthropic.com/*',
+    tabUrl: 'https://platform.claude.com/*',
     messageType: 'FETCH_API_USAGE',
     scriptFile: 'content/console-content-script.js',
     cacheKey: 'cachedApiUsage',
     timeKey: 'lastApiFetchTime',
     historyKey: 'apiUsageHistory',
-    noTabError: 'No console.anthropic.com tab open. Open the Anthropic console to fetch API usage.',
+    noTabError: 'No platform.claude.com tab open. Open the Anthropic console to fetch API usage.',
   }
 };
 

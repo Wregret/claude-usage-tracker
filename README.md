@@ -5,7 +5,7 @@ A Chrome extension that shows your **claude.ai chat usage** and **Anthropic API 
 ## Features
 
 - **Chat Usage Tab** — 5-hour and 7-day utilization bars from claude.ai, color-coded green/yellow/red.
-- **API Usage Tab** — Spend, model breakdown, and rate limits from console.anthropic.com.
+- **API Usage Tab** — Spend, model breakdown, and rate limits from platform.claude.com.
 - **Plan Info** — Shows your current plan (Free, Pro, Team, etc.).
 - **Auto-Refresh** — Data refreshes every 5 minutes while relevant tabs are open.
 - **Manual Refresh** — Click the refresh button anytime.
@@ -21,7 +21,7 @@ The extension runs content scripts on two sites:
 1. Discovers your organization ID by fetching the organizations API.
 2. Fetches usage data from claude.ai's internal API endpoints.
 
-**API usage** (console.anthropic.com):
+**API usage** (platform.claude.com):
 1. Discovers your workspace/org ID on the Anthropic console.
 2. Fetches billing, usage, and rate limit data.
 
@@ -47,7 +47,7 @@ Both use your existing session cookies — no API keys or separate login needed.
 ### First Use
 
 1. Open [claude.ai](https://claude.ai) in a tab (you must be logged in) for chat usage.
-2. Open [console.anthropic.com](https://console.anthropic.com) in a tab (logged in) for API usage.
+2. Open [platform.claude.com](https://platform.claude.com) in a tab (logged in) for API usage.
 3. Click the extension icon — switch between **Chat** and **API** tabs.
 4. If you see an error, try refreshing the relevant page, then click the refresh button.
 
@@ -78,7 +78,7 @@ Both use your existing session cookies — no API keys or separate login needed.
 ## Privacy
 
 - All data stored locally in `chrome.storage.local`.
-- The extension only communicates with `claude.ai` and `console.anthropic.com` (same-origin API calls via content scripts).
+- The extension only communicates with `claude.ai` and `platform.claude.com` (same-origin API calls via content scripts).
 - No data is sent to any third-party server.
 - No external scripts loaded.
 

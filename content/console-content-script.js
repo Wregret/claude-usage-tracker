@@ -1,5 +1,5 @@
 /**
- * Content script for Anthropic Console (console.anthropic.com).
+ * Content script for Anthropic Console (platform.claude.com).
  *
  * Mirrors content-script.js but for API usage data.
  * Discovers the workspace/org ID and fetches billing/usage info.
@@ -34,7 +34,7 @@
   // ─── API Fetching ─────────────────────────────────────────
 
   /**
-   * Fetch API usage data from console.anthropic.com's internal endpoints.
+   * Fetch API usage data from platform.claude.com's internal endpoints.
    * Tries multiple endpoints in parallel, returns whatever succeeds.
    * @returns {Promise<Object>}
    */
@@ -56,7 +56,7 @@
         orgId = await discoverOrgId();
       }
       if (!orgId) {
-        result.error = 'Could not find organization ID. Please open console.anthropic.com and log in.';
+        result.error = 'Could not find organization ID. Please open platform.claude.com and log in.';
         return result;
       }
       result.orgId = orgId;
@@ -103,7 +103,7 @@
   // ─── Org ID Discovery ────────────────────────────────────
 
   /**
-   * Discover the org/workspace ID on console.anthropic.com.
+   * Discover the org/workspace ID on platform.claude.com.
    * @returns {Promise<string|null>}
    */
   async function discoverOrgId() {

@@ -9,7 +9,7 @@ claude-usage-tracker/
 │   └── service-worker.js              # Message relay, caching, periodic refresh
 ├── content/
 │   ├── content-script.js              # Chat usage (claude.ai)
-│   └── console-content-script.js      # API usage (console.anthropic.com)
+│   └── console-content-script.js      # API usage (platform.claude.com)
 ├── popup/
 │   ├── popup.html                     # Tabbed UI: Chat + API
 │   ├── popup.css                      # Styles (tabs, bars, tables)
@@ -40,7 +40,7 @@ Popup                          Service Worker                Content Scripts
   │                                │◂── { usage, org } ──────│
   │◂── chat data ─────────────────│
   │                                │
-  │── POPUP_FETCH_API_USAGE ─────▸│                          console.anthropic.com tab
+  │── POPUP_FETCH_API_USAGE ─────▸│                          platform.claude.com tab
   │                                │── FETCH_API_USAGE ─────▸│── fetch(/api/.../usage)
   │                                │◂── { billing, org } ────│
   │◂── api data ──────────────────│
@@ -62,7 +62,7 @@ Popup                          Service Worker                Content Scripts
 | `cachedUsage` | object | Chat | Last fetched chat usage data |
 | `lastFetchTime` | number | Chat | Epoch ms of last chat fetch |
 | `usageHistory` | object | Chat | `{ "YYYY-MM-DD": snapshot }` (90-day retention) |
-| `apiOrgId` | string | API | console.anthropic.com org UUID |
+| `apiOrgId` | string | API | platform.claude.com org UUID |
 | `cachedApiUsage` | object | API | Last fetched API usage data |
 | `lastApiFetchTime` | number | API | Epoch ms of last API fetch |
 | `apiUsageHistory` | object | API | `{ "YYYY-MM-DD": snapshot }` (90-day retention) |
@@ -91,9 +91,9 @@ python3 tests/test_extension.py
 2. Update `content/content-script.js`: `fetchUsageData()`, `discoverOrgId()`.
 3. Update `popup/popup.js`: `extractChatUsageBars()`.
 
-### When console.anthropic.com changes its API
+### When platform.claude.com changes its API
 
-1. Open DevTools Network tab on console.anthropic.com/settings/billing.
+1. Open DevTools Network tab on platform.claude.com/settings/billing.
 2. Update `content/console-content-script.js`: `fetchApiUsageData()`, `discoverOrgId()`.
 3. Update `popup/popup.js`: `extractApiUsageBars()`, `renderApiModels()`.
 

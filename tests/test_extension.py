@@ -4,7 +4,7 @@ Test suite for Claude Usage Tracker Chrome Extension.
 
 Two data pipelines:
   - Chat: claude.ai usage (percentage bars)
-  - API: console.anthropic.com usage (spend, models)
+  - API: platform.claude.com usage (spend, models)
 
 Run:  python3 tests/test_extension.py
 """
@@ -51,7 +51,7 @@ class TestManifest(unittest.TestCase):
 
     def test_host_permissions_console(self):
         hosts = self.m.get("host_permissions", [])
-        self.assertTrue(any("console.anthropic.com" in h for h in hosts))
+        self.assertTrue(any("platform.claude.com" in h for h in hosts))
 
     def test_no_module_type(self):
         self.assertNotIn("type", self.m.get("background", {}))
@@ -65,10 +65,10 @@ class TestManifest(unittest.TestCase):
                 self.assertTrue((ROOT / js).exists(), f"Missing: {js}")
 
     def test_has_two_content_scripts(self):
-        """Must have content scripts for both claude.ai and console.anthropic.com."""
+        """Must have content scripts for both claude.ai and platform.claude.com."""
         matches = [cs["matches"][0] for cs in self.m.get("content_scripts", [])]
         self.assertTrue(any("claude.ai" in m for m in matches))
-        self.assertTrue(any("console.anthropic.com" in m for m in matches))
+        self.assertTrue(any("platform.claude.com" in m for m in matches))
 
     def test_popup_exists(self):
         self.assertTrue((ROOT / self.m["action"]["default_popup"]).exists())
@@ -128,7 +128,7 @@ class TestServiceWorker(unittest.TestCase):
         self.assertIn("POPUP_GET_API_HISTORY", self.code)
 
     def test_queries_console_tabs(self):
-        self.assertIn("console.anthropic.com", self.code)
+        self.assertIn("platform.claude.com", self.code)
 
     def test_caches_api_usage(self):
         self.assertIn("cachedApiUsage", self.code)
@@ -229,7 +229,7 @@ class TestContentScript(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Console Content Script (console.anthropic.com)
+# Console Content Script (platform.claude.com)
 # ═══════════════════════════════════════════════════════════════
 
 class TestConsoleContentScript(unittest.TestCase):
