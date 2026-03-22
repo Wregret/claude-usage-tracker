@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Claude Usage Tracker",
-  "version": "1.0.0",
-  "description": "Track your claude.ai usage with session durations, message counts, and visual analytics.",
-  "permissions": ["storage", "tabs", "alarms"],
+  "version": "2.0.0",
+  "description": "See your claude.ai usage limits and token consumption at a glance — no need to visit the settings page.",
+  "permissions": ["storage", "alarms", "tabs"],
   "host_permissions": ["https://claude.ai/*"],
   "background": {
-    "service_worker": "background/service-worker.js",
-    "type": "module"
+    "service_worker": "background/service-worker.js"
   },
   "content_scripts": [
     {

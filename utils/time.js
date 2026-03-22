@@ -1,114 +1,51 @@
 /**
- * Time utility functions shared across the extension.
- * Provides formatting, date arithmetic, and labeling helpers.
+ * Shared utility functions for Claude Usage Tracker.
+ * Used by the popup (loaded via <script> tag).
  */
 
 /**
- * Format a duration in milliseconds to a human-readable string.
- * Examples: "2h 15m", "45m", "< 1m"
- * @param {number} ms - Duration in milliseconds
- * @returns {string} Formatted duration string
+ * Format a token count for display: "1,234", "15.2K", "1.5M".
+ * @param {number} count
+ * @returns {string}
  */
-function formatDuration(ms) {
-  if (ms < 60000) return '< 1m';
-  const totalMinutes = Math.floor(ms / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours === 0) return `${minutes}m`;
-  if (minutes === 0) return `${hours}h`;
-  return `${hours}h ${minutes}m`;
+function formatTokens(count) {
+  if (count < 1000) return count.toLocaleString();
+  if (count < 100000) return (count / 1000).toFixed(1) + 'K';
+  if (count < 1000000) return Math.round(count / 1000) + 'K';
+  return (count / 1000000).toFixed(1) + 'M';
 }
 
 /**
- * Get the Monday of the week containing the given date.
- * @param {Date|number} date - Date object or timestamp
- * @returns {string} ISO date string (YYYY-MM-DD) of Monday
+ * Extract plan name from usage data.
+ * Searches multiple possible locations in the API response.
+ * @param {Object} data - Usage data from content script
+ * @returns {string|null}
  */
-function getWeekStart(date) {
-  const d = new Date(date);
-  const day = d.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-  const diff = day === 0 ? 6 : day - 1; // Days since Monday
-  d.setDate(d.getDate() - diff);
-  return getDateString(d);
-}
+function extractPlanName(data) {
+  if (!data) return null;
 
-/**
- * Convert a timestamp or Date to an ISO date string (YYYY-MM-DD).
- * @param {Date|number} date - Date object or timestamp
- * @returns {string} ISO date string
- */
-function getDateString(date) {
-  const d = new Date(date);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
+  // Check organization data
+  if (data.organization) {
+    const org = data.organization;
+    if (org.plan) return typeof org.plan === 'string' ? org.plan : org.plan.name || null;
+    if (org.subscription) {
+      const sub = org.subscription;
+      return sub.plan || sub.plan_name || sub.type || null;
+    }
+    if (org.billing) return org.billing.plan || null;
+    if (org.rate_limit_tier) return org.rate_limit_tier;
+  }
 
-/**
- * Get the hour of day (0-23) from a timestamp.
- * @param {number} timestamp - Millisecond timestamp
- * @returns {number} Hour of day (0-23)
- */
-function getHourOfDay(timestamp) {
-  return new Date(timestamp).getHours();
-}
+  // Check settings data
+  if (data.settings) {
+    const s = data.settings;
+    if (s.plan) return typeof s.plan === 'string' ? s.plan : s.plan.name || null;
+  }
 
-/**
- * Get the day of week (0=Mon, 6=Sun) from a timestamp.
- * @param {number} timestamp - Millisecond timestamp
- * @returns {number} Day of week (0=Mon, 6=Sun)
- */
-function getDayOfWeek(timestamp) {
-  const jsDay = new Date(timestamp).getDay(); // 0=Sun
-  return jsDay === 0 ? 6 : jsDay - 1; // Convert to 0=Mon
-}
+  // Check usage data
+  if (data.usage && data.usage.plan) {
+    return typeof data.usage.plan === 'string' ? data.usage.plan : data.usage.plan.name || null;
+  }
 
-/**
- * Day of week names indexed by our Mon=0 convention.
- */
-const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-/**
- * Get a relative date label for display.
- * Returns "Today", "Yesterday", or a formatted date like "Mar 20, 2026".
- * @param {string} dateStr - ISO date string (YYYY-MM-DD)
- * @returns {string} Human-friendly label
- */
-function getRelativeDateLabel(dateStr) {
-  const today = getDateString(new Date());
-  if (dateStr === today) return 'Today';
-
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (dateStr === getDateString(yesterday)) return 'Yesterday';
-
-  const d = new Date(dateStr + 'T00:00:00');
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
-}
-
-/**
- * Format a timestamp as a time string (e.g., "2:30 PM").
- * @param {number} timestamp - Millisecond timestamp
- * @returns {string} Formatted time string
- */
-function formatTime(timestamp) {
-  const d = new Date(timestamp);
-  let hours = d.getHours();
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12 || 12;
-  return `${hours}:${minutes} ${ampm}`;
-}
-
-// Export for use in modules (background service worker)
-if (typeof globalThis !== 'undefined' && typeof importScripts === 'function') {
-  // Service worker context — functions are already global
-} else if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    formatDuration, getWeekStart, getDateString, getHourOfDay,
-    getDayOfWeek, DAY_NAMES, getRelativeDateLabel, formatTime
-  };
+  return null;
 }

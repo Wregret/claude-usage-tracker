@@ -1,36 +1,28 @@
 /**
  * Popup stylesheet for Claude Usage Tracker.
- * Uses CSS custom properties for easy theming.
- * Card-based layout with a clean, modern feel.
+ * Focused on the usage percentage bar as the primary UI element.
  */
-
-/* ─── CSS Variables ─────────────────────────────────────────── */
 
 :root {
   --bg: #f8f9fa;
   --card-bg: #ffffff;
   --text: #1a1a2e;
   --text-muted: #6c757d;
-  --primary: #d97706;        /* Claude's amber/orange accent */
-  --primary-light: #fef3c7;
+  --primary: #d97706;
   --primary-dark: #b45309;
   --border: #e9ecef;
-  --success: #10b981;
+  --bar-ok: #10b981;
+  --bar-warning: #f59e0b;
+  --bar-danger: #ef4444;
   --radius: 8px;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
-/* ─── Reset & Base ──────────────────────────────────────────── */
-
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
+* { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
   width: 380px;
-  min-height: 480px;
+  min-height: 200px;
   max-height: 560px;
   overflow-y: auto;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -45,59 +37,50 @@ body {
 .header {
   background: linear-gradient(135deg, var(--primary), var(--primary-dark));
   color: white;
-  padding: 14px 16px;
-  text-align: center;
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .header h1 {
   font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.3px;
 }
 
-/* ─── Tabs ──────────────────────────────────────────────────── */
+.refresh-btn {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background 0.2s, transform 0.3s;
+  line-height: 1;
+}
 
-.tabs {
-  display: flex;
+.refresh-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.refresh-btn.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Status Bar ────────────────────────────────────────────── */
+
+.status-bar {
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--text-muted);
   background: var(--card-bg);
   border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-
-.tab {
-  flex: 1;
-  padding: 10px 8px;
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
-  border-bottom: 2px solid transparent;
-  transition: all 0.2s;
-}
-
-.tab:hover {
-  color: var(--text);
-  background: var(--bg);
-}
-
-.tab.active {
-  color: var(--primary);
-  border-bottom-color: var(--primary);
-}
-
-/* ─── Tab Content ───────────────────────────────────────────── */
-
-.tab-content {
-  display: none;
-  padding: 12px;
-}
-
-.tab-content.active {
-  display: block;
 }
 
 /* ─── Cards ─────────────────────────────────────────────────── */
@@ -106,7 +89,7 @@ body {
   background: var(--card-bg);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  margin-bottom: 10px;
+  margin: 10px 12px;
   overflow: hidden;
 }
 
@@ -114,8 +97,8 @@ body {
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 8px;
 }
 
 .card-header h3 {
@@ -132,163 +115,151 @@ body {
 
 .card-body.center {
   text-align: center;
-  padding: 24px 14px;
+  padding: 20px 14px;
 }
 
-/* ─── Status Dot (active session indicator) ─────────────────── */
+/* ─── Plan Badge ────────────────────────────────────────────── */
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  display: inline-block;
+.plan-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--primary);
+  color: white;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
-.status-dot.active {
-  background: var(--success);
-  animation: pulse 2s infinite;
+.plan-badge:empty {
+  display: none;
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+/* ─── Usage Bar (the primary UI element) ────────────────────── */
+
+.usage-bar-group {
+  margin-bottom: 14px;
 }
 
-/* ─── Stats ─────────────────────────────────────────────────── */
-
-.stat-row {
-  display: flex;
-  justify-content: space-around;
-  text-align: center;
+.usage-bar-group:last-child {
+  margin-bottom: 0;
 }
 
-.stat-value {
-  display: block;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.stat-label {
-  display: block;
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 2px;
-}
-
-/* ─── Quick Stats ───────────────────────────────────────────── */
-
-.quick-stat {
+.usage-bar-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border);
+  align-items: baseline;
+  margin-bottom: 6px;
 }
 
-.quick-stat:last-child {
-  border-bottom: none;
-}
-
-.quick-stat-label {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.quick-stat-value {
+.usage-bar-label {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
 
-/* ─── Sessions List ─────────────────────────────────────────── */
-
-.sessions-list {
-  max-height: 420px;
-  overflow-y: auto;
-}
-
-.session-date-group {
-  margin-bottom: 12px;
-}
-
-.session-date-header {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-muted);
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 6px;
-}
-
-.session-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 10px;
-  background: var(--card-bg);
-  border-radius: 6px;
-  margin-bottom: 4px;
-  box-shadow: var(--shadow);
-}
-
-.session-time {
-  font-size: 12px;
-  font-weight: 500;
+.usage-bar-value {
+  font-size: 13px;
+  font-weight: 700;
   color: var(--text);
 }
 
-.session-meta {
-  display: flex;
-  gap: 12px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.session-meta span {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-
-/* ─── Analytics ─────────────────────────────────────────────── */
-
-.range-selector {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.range-btn {
-  flex: 1;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
+.usage-bar-track {
+  height: 12px;
+  background: var(--border);
   border-radius: 6px;
-  background: var(--card-bg);
-  cursor: pointer;
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  border-radius: 6px;
+  transition: width 0.5s ease;
+  min-width: 2px;
+}
+
+.bar-ok { background: var(--bar-ok); }
+.bar-warning { background: var(--bar-warning); }
+.bar-danger { background: var(--bar-danger); }
+
+.usage-bar-detail {
   font-size: 11px;
-  font-weight: 500;
   color: var(--text-muted);
-  transition: all 0.2s;
+  margin-top: 4px;
 }
 
-.range-btn:hover {
-  border-color: var(--primary);
-  color: var(--primary);
+/* ─── Info Rows ─────────────────────────────────────────────── */
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
 }
 
-.range-btn.active {
-  background: var(--primary);
-  color: white;
-  border-color: var(--primary);
+.info-row:last-child {
+  border-bottom: none;
 }
+
+.info-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.info-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ─── Details (collapsible JSON) ────────────────────────────── */
+
+.clickable {
+  cursor: pointer;
+}
+
+.clickable:hover {
+  background: var(--bg);
+}
+
+.toggle-arrow {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+
+.details-json {
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--bg);
+  padding: 8px;
+  border-radius: 4px;
+}
+
+/* ─── Error Card ────────────────────────────────────────────── */
+
+.error-card {
+  border-left: 3px solid var(--bar-danger);
+}
+
+.error-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--bar-danger);
+  margin-bottom: 6px;
+}
+
+/* ─── Chart ─────────────────────────────────────────────────── */
 
 .chart-container {
   padding: 10px;
-  height: 200px;
+  height: 180px;
   position: relative;
 }
 
@@ -297,32 +268,16 @@ body {
   height: 100% !important;
 }
 
-/* ─── Utility Classes ───────────────────────────────────────── */
+/* ─── Utilities ─────────────────────────────────────────────── */
 
-.hidden {
-  display: none !important;
-}
+.hidden { display: none !important; }
 
 .muted {
   color: var(--text-muted);
   font-size: 12px;
 }
 
-/* ─── Scrollbar Styling ─────────────────────────────────────── */
-
-::-webkit-scrollbar {
-  width: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
-}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }

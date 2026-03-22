@@ -1,386 +1,397 @@
 /**
  * Popup script for Claude Usage Tracker.
  *
- * Manages three tabs:
- * - Dashboard: live session info, today/week summaries, quick stats
- * - Sessions: scrollable list of recent sessions grouped by date
- * - Analytics: Chart.js line/bar charts for usage trends
+ * Displays usage data fetched from claude.ai's internal API:
+ * - Usage percentage bar(s) — the primary feature
+ * - Rate limit status
+ * - Usage history chart
+ * - Raw JSON details (collapsible)
+ *
+ * Data flow:
+ *   popup → background (POPUP_FETCH_USAGE) → content script (FETCH_USAGE)
+ *   → content script fetches claude.ai API → data flows back
  */
 
 (() => {
   'use strict';
 
-  // ─── State ───────────────────────────────────────────────────
-
-  /** Timer ID for live session duration updates */
-  let liveTimerInterval = null;
-
-  /** Chart.js instances (destroyed and recreated on tab switch) */
-  let dailyChart = null;
-  let dowChart = null;
-  let hourlyChart = null;
-
-  /** Currently selected analytics date range (days, or 'all') */
-  let selectedRange = 7;
+  let historyChart = null;
 
   // ─── Initialization ────────────────────────────────────────
 
   document.addEventListener('DOMContentLoaded', () => {
-    setupTabs();
-    setupRangeSelector();
-    renderDashboard();
+    setupRefreshButton();
+    setupDetailsToggle();
+    loadData();
   });
 
-  // ─── Tab Management ────────────────────────────────────────
+  // ─── Data Loading ──────────────────────────────────────────
 
   /**
-   * Set up click handlers for tab navigation.
-   * Switches visible content and triggers tab-specific rendering.
+   * Load usage data: show cached first, then fetch fresh.
    */
-  function setupTabs() {
-    const tabs = document.querySelectorAll('.tab');
-    const contents = document.querySelectorAll('.tab-content');
+  async function loadData() {
+    setStatus('Loading cached data...');
 
-    tabs.forEach(tab => {
-      tab.addEventListener('click', () => {
-        // Deactivate all tabs and content
-        tabs.forEach(t => t.classList.remove('active'));
-        contents.forEach(c => c.classList.remove('active'));
+    // Show cached data immediately if available
+    const cached = await sendMessage({ type: 'POPUP_GET_CACHED' });
+    if (cached && cached.ok) {
+      renderUsageData(cached);
+    }
 
-        // Activate clicked tab and its content
-        tab.classList.add('active');
-        const tabId = tab.dataset.tab;
-        document.getElementById(tabId).classList.add('active');
-
-        // Render tab-specific content
-        if (tabId === 'dashboard') renderDashboard();
-        else if (tabId === 'sessions') renderSessions();
-        else if (tabId === 'analytics') renderAnalytics();
-      });
-    });
+    // Then fetch fresh data
+    await refreshData();
   }
 
-  // ─── Dashboard Tab ─────────────────────────────────────────
+  /**
+   * Fetch fresh usage data from the content script.
+   */
+  async function refreshData() {
+    setStatus('Fetching from claude.ai...');
+    setRefreshSpinning(true);
+
+    try {
+      const data = await sendMessage({ type: 'POPUP_FETCH_USAGE' });
+      if (data && data.ok) {
+        renderUsageData(data);
+        setStatus('Updated ' + formatTimeAgo(data.timestamp || Date.now()));
+      } else {
+        // Show error but keep any cached data visible
+        const errorMsg = data?.error || 'Could not fetch usage data.';
+        if (!document.getElementById('usage-section').classList.contains('hidden')) {
+          // We have cached data showing — just update status
+          setStatus('Update failed: ' + errorMsg);
+        } else {
+          showError(errorMsg);
+        }
+      }
+    } catch (e) {
+      showError('Could not reach extension background. Try reloading the extension.');
+    }
+
+    setRefreshSpinning(false);
+
+    // Also load history chart
+    await loadHistory();
+  }
+
+  // ─── Rendering ─────────────────────────────────────────────
 
   /**
-   * Render the dashboard with current session, today's stats,
-   * weekly stats, and quick stats.
+   * Render the usage data into the popup UI.
+   * Adapts to whatever data shape the API returns.
+   * @param {Object} data - Usage response from content script
    */
-  async function renderDashboard() {
-    // Stop any existing live timer
-    clearInterval(liveTimerInterval);
+  function renderUsageData(data) {
+    document.getElementById('error-card').classList.add('hidden');
+    document.getElementById('usage-section').classList.remove('hidden');
 
-    // Current session
-    const activeSession = await Storage.getActiveSession();
-    const sessionCard = document.getElementById('current-session-card');
-    const noSessionCard = document.getElementById('no-session-card');
+    // Plan badge
+    const planBadge = document.getElementById('plan-badge');
+    const planName = extractPlanName(data);
+    if (planName) {
+      planBadge.textContent = planName;
+      planBadge.classList.remove('hidden');
+    }
 
-    if (activeSession) {
-      sessionCard.classList.remove('hidden');
-      noSessionCard.classList.add('hidden');
-      updateSessionDisplay(activeSession);
-      // Start live timer to update duration every second
-      liveTimerInterval = setInterval(() => updateSessionDisplay(activeSession), 1000);
+    // Render usage bars
+    renderUsageBars(data);
+
+    // Render rate limit info
+    renderRateLimits(data);
+
+    // Render raw details
+    renderDetails(data);
+
+    // Update status
+    if (data.fromCache && data.cacheAge) {
+      setStatus('Cached ' + formatTimeAgo(Date.now() - data.cacheAge));
     } else {
-      sessionCard.classList.add('hidden');
-      noSessionCard.classList.remove('hidden');
-    }
-
-    // Today's summary
-    const today = getDateString(new Date());
-    const dailyAgg = await Storage.getDailyAggregates();
-    const todayData = dailyAgg[today] || { duration: 0, messages: 0, sessions: 0 };
-
-    // Include active session in today's totals
-    if (activeSession) {
-      const liveDuration = Date.now() - activeSession.startTime;
-      todayData.duration += liveDuration;
-      todayData.messages += activeSession.messageCount;
-      todayData.sessions += 1;
-    }
-
-    document.getElementById('today-duration').textContent = formatDuration(todayData.duration);
-    document.getElementById('today-messages').textContent = todayData.messages;
-    document.getElementById('today-sessions').textContent = todayData.sessions;
-
-    // This week's summary
-    const weekStart = getWeekStart(new Date());
-    let weekDuration = 0, weekMessages = 0, weekSessions = 0;
-    for (const [date, data] of Object.entries(dailyAgg)) {
-      if (date >= weekStart) {
-        weekDuration += data.duration;
-        weekMessages += data.messages;
-        weekSessions += data.sessions;
-      }
-    }
-    // Include active session in weekly totals
-    if (activeSession) {
-      weekDuration += Date.now() - activeSession.startTime;
-      weekMessages += activeSession.messageCount;
-      weekSessions += 1;
-    }
-
-    document.getElementById('week-duration').textContent = formatDuration(weekDuration);
-    document.getElementById('week-messages').textContent = weekMessages;
-    document.getElementById('week-sessions').textContent = weekSessions;
-
-    // Quick stats
-    await renderQuickStats();
-  }
-
-  /**
-   * Update the live session display (duration and message count).
-   * Called every second while a session is active.
-   * @param {Object} session - Active session object
-   */
-  function updateSessionDisplay(session) {
-    const elapsed = Date.now() - session.startTime;
-    document.getElementById('session-duration').textContent = formatDuration(elapsed);
-    document.getElementById('session-messages').textContent = session.messageCount;
-  }
-
-  /**
-   * Compute and display quick stats: most active day, peak hour, avg session.
-   */
-  async function renderQuickStats() {
-    // Most active day of week
-    const dowAgg = await Storage.getDayOfWeekAggregates();
-    let maxDayMessages = 0;
-    let mostActiveDay = '--';
-    for (const [dayIdx, data] of Object.entries(dowAgg)) {
-      if (data.messages > maxDayMessages) {
-        maxDayMessages = data.messages;
-        mostActiveDay = DAY_NAMES[parseInt(dayIdx)];
-      }
-    }
-    document.getElementById('most-active-day').textContent = mostActiveDay;
-
-    // Peak hour
-    const hourlyAgg = await Storage.getHourlyAggregates();
-    let maxHourMessages = 0;
-    let peakHour = '--';
-    for (const [hour, data] of Object.entries(hourlyAgg)) {
-      if (data.messages > maxHourMessages) {
-        maxHourMessages = data.messages;
-        const h = parseInt(hour);
-        const ampm = h >= 12 ? 'PM' : 'AM';
-        const h12 = h % 12 || 12;
-        peakHour = `${h12}-${(h12 % 12) + 1} ${ampm}`;
-      }
-    }
-    document.getElementById('peak-hour').textContent = peakHour;
-
-    // Average session duration
-    const sessions = await Storage.getSessions();
-    if (sessions.length > 0) {
-      const totalDuration = sessions.reduce((sum, s) => sum + s.duration, 0);
-      const avgDuration = totalDuration / sessions.length;
-      document.getElementById('avg-session').textContent = formatDuration(avgDuration);
-    } else {
-      document.getElementById('avg-session').textContent = '--';
+      setStatus('Updated ' + formatTimeAgo(data.timestamp || Date.now()));
     }
   }
 
-  // ─── Sessions Tab ──────────────────────────────────────────
-
   /**
-   * Render the sessions list, grouped by date, most recent first.
+   * Render usage percentage bars.
+   * Handles multiple possible API response shapes.
    */
-  async function renderSessions() {
-    const sessions = await Storage.getSessions();
-    const container = document.getElementById('sessions-list');
-
-    if (sessions.length === 0) {
-      container.innerHTML = '<p class="muted center">No sessions recorded yet.</p>';
-      return;
-    }
-
-    // Sort by startTime descending (most recent first)
-    sessions.sort((a, b) => b.startTime - a.startTime);
-
-    // Group by date
-    const groups = {};
-    for (const session of sessions) {
-      if (!groups[session.date]) groups[session.date] = [];
-      groups[session.date].push(session);
-    }
-
-    // Build HTML
+  function renderUsageBars(data) {
+    const container = document.getElementById('usage-bars');
     let html = '';
-    for (const [date, dateSessions] of Object.entries(groups)) {
-      const label = getRelativeDateLabel(date);
-      html += `<div class="session-date-group">`;
-      html += `<div class="session-date-header">${label}</div>`;
-      for (const s of dateSessions) {
-        const time = formatTime(s.startTime);
-        const duration = formatDuration(s.duration);
-        html += `
-          <div class="session-item">
-            <span class="session-time">${time}</span>
-            <div class="session-meta">
-              <span>${duration}</span>
-              <span>${s.messageCount} msgs</span>
-            </div>
-          </div>`;
-      }
-      html += `</div>`;
+
+    // Try to extract usage bars from various data shapes
+    const bars = extractUsageBars(data);
+
+    if (bars.length === 0) {
+      html = '<p class="muted">No usage bar data available.</p>';
+    }
+
+    for (const bar of bars) {
+      const pct = Math.min(100, Math.max(0, bar.percentage));
+      const colorClass = pct >= 90 ? 'bar-danger' : pct >= 70 ? 'bar-warning' : 'bar-ok';
+
+      html += `
+        <div class="usage-bar-group">
+          <div class="usage-bar-header">
+            <span class="usage-bar-label">${escapeHtml(bar.label)}</span>
+            <span class="usage-bar-value">${escapeHtml(bar.valueText)}</span>
+          </div>
+          <div class="usage-bar-track">
+            <div class="usage-bar-fill ${colorClass}" style="width: ${pct}%"></div>
+          </div>
+          ${bar.detail ? `<div class="usage-bar-detail">${escapeHtml(bar.detail)}</div>` : ''}
+        </div>`;
     }
 
     container.innerHTML = html;
   }
 
-  // ─── Analytics Tab ─────────────────────────────────────────
-
   /**
-   * Set up the date range selector buttons.
+   * Extract usage bars from whatever data the API returned.
+   * Handles multiple known API response formats.
+   * @param {Object} data
+   * @returns {Array<{label, percentage, valueText, detail}>}
    */
-  function setupRangeSelector() {
-    const buttons = document.querySelectorAll('.range-btn');
-    buttons.forEach(btn => {
-      btn.addEventListener('click', () => {
-        buttons.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        selectedRange = btn.dataset.range === 'all' ? 'all' : parseInt(btn.dataset.range);
-        renderAnalytics();
-      });
-    });
-  }
+  function extractUsageBars(data) {
+    const bars = [];
 
-  /**
-   * Render all analytics charts for the selected date range.
-   */
-  async function renderAnalytics() {
-    // Destroy existing charts to prevent memory leaks
-    if (dailyChart) { dailyChart.destroy(); dailyChart = null; }
-    if (dowChart) { dowChart.destroy(); dowChart = null; }
-    if (hourlyChart) { hourlyChart.destroy(); hourlyChart = null; }
+    // ─── From rate limit data ────────────────────────
+    if (data.rateLimit) {
+      const rl = data.rateLimit;
 
-    await renderDailyChart();
-    await renderDowChart();
-    await renderHourlyChart();
-  }
+      // Shape 1: { percentage_used: 45.2, daily_limit: 100, daily_used: 45 }
+      if (typeof rl.percentage_used === 'number') {
+        bars.push({
+          label: 'Daily Usage',
+          percentage: rl.percentage_used,
+          valueText: `${Math.round(rl.percentage_used)}%`,
+          detail: rl.daily_limit ? `${rl.daily_used || 0} / ${rl.daily_limit} messages` : null
+        });
+      }
 
-  /**
-   * Render the daily usage line chart.
-   * Shows duration (hours) and messages per day.
-   */
-  async function renderDailyChart() {
-    const dailyAgg = await Storage.getDailyAggregates();
+      // Shape 2: { rate_limit: { ... }, messages_remaining: 50, messages_limit: 100 }
+      if (typeof rl.messages_remaining === 'number' && typeof rl.messages_limit === 'number') {
+        const used = rl.messages_limit - rl.messages_remaining;
+        const pct = rl.messages_limit > 0 ? (used / rl.messages_limit) * 100 : 0;
+        bars.push({
+          label: 'Messages',
+          percentage: pct,
+          valueText: `${used} / ${rl.messages_limit}`,
+          detail: `${rl.messages_remaining} remaining`
+        });
+      }
 
-    // Generate date labels for the selected range
-    const dates = [];
-    const now = new Date();
+      // Shape 3: nested limits array
+      if (Array.isArray(rl.limits)) {
+        for (const limit of rl.limits) {
+          const pct = limit.max > 0 ? (limit.used / limit.max) * 100 : 0;
+          bars.push({
+            label: limit.name || limit.type || 'Limit',
+            percentage: pct,
+            valueText: `${limit.used} / ${limit.max}`,
+            detail: limit.resetsAt ? `Resets ${formatResetTime(limit.resetsAt)}` : null
+          });
+        }
+      }
 
-    if (selectedRange === 'all') {
-      // Use all dates that have data, sorted
-      const allDates = Object.keys(dailyAgg).sort();
-      dates.push(...allDates);
-    } else {
-      // Generate last N days
-      for (let i = selectedRange - 1; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        dates.push(getDateString(d));
+      // Shape 4: { type: "...", remaining: N, limit: N, reset_at: "..." }
+      if (typeof rl.remaining === 'number' && typeof rl.limit === 'number') {
+        const used = rl.limit - rl.remaining;
+        const pct = rl.limit > 0 ? (used / rl.limit) * 100 : 0;
+        bars.push({
+          label: rl.type || 'Usage',
+          percentage: pct,
+          valueText: `${used} / ${rl.limit}`,
+          detail: rl.reset_at ? `Resets ${formatResetTime(rl.reset_at)}` : null
+        });
+      }
+
+      // Shape 5: generic object with known keys
+      if (bars.length === 0 && typeof rl === 'object') {
+        // Walk keys looking for usage-like patterns
+        for (const [key, val] of Object.entries(rl)) {
+          if (typeof val === 'object' && val !== null) {
+            if ('used' in val && 'limit' in val) {
+              const pct = val.limit > 0 ? (val.used / val.limit) * 100 : 0;
+              bars.push({
+                label: formatLabel(key),
+                percentage: pct,
+                valueText: `${val.used} / ${val.limit}`,
+                detail: val.reset_at ? `Resets ${formatResetTime(val.reset_at)}` : null
+              });
+            }
+          }
+        }
       }
     }
 
-    // Build data arrays
-    const durationData = dates.map(d => {
-      const agg = dailyAgg[d];
-      return agg ? +(agg.duration / 3600000).toFixed(2) : 0; // Convert ms to hours
-    });
-    const messageData = dates.map(d => {
-      const agg = dailyAgg[d];
-      return agg ? agg.messages : 0;
-    });
+    // ─── From usage data ─────────────────────────────
+    if (data.usage && bars.length === 0) {
+      const u = data.usage;
 
-    // Short date labels (e.g., "Mar 22")
+      // Token-based usage
+      if (typeof u.total_tokens === 'number' && typeof u.token_limit === 'number') {
+        const pct = u.token_limit > 0 ? (u.total_tokens / u.token_limit) * 100 : 0;
+        bars.push({
+          label: 'Token Usage',
+          percentage: pct,
+          valueText: `${formatTokens(u.total_tokens)} / ${formatTokens(u.token_limit)}`,
+          detail: null
+        });
+      }
+
+      // Message-based usage
+      if (typeof u.message_count === 'number' && typeof u.message_limit === 'number') {
+        const pct = u.message_limit > 0 ? (u.message_count / u.message_limit) * 100 : 0;
+        bars.push({
+          label: 'Messages',
+          percentage: pct,
+          valueText: `${u.message_count} / ${u.message_limit}`,
+          detail: null
+        });
+      }
+
+      // Generic: walk the usage object for patterns
+      if (bars.length === 0 && typeof u === 'object') {
+        for (const [key, val] of Object.entries(u)) {
+          if (typeof val === 'object' && val !== null && 'used' in val && 'limit' in val) {
+            const pct = val.limit > 0 ? (val.used / val.limit) * 100 : 0;
+            bars.push({
+              label: formatLabel(key),
+              percentage: pct,
+              valueText: `${val.used} / ${val.limit}`,
+              detail: null
+            });
+          }
+        }
+      }
+    }
+
+    // ─── From organization data (plan info) ──────────
+    if (data.organization && bars.length === 0) {
+      const org = data.organization;
+      if (org.rate_limit_tier || org.usage) {
+        // Try to extract from organization-level fields
+        const usage = org.usage || {};
+        for (const [key, val] of Object.entries(usage)) {
+          if (typeof val === 'object' && val !== null && 'used' in val) {
+            const limit = val.limit || val.max || 100;
+            const pct = limit > 0 ? (val.used / limit) * 100 : 0;
+            bars.push({
+              label: formatLabel(key),
+              percentage: pct,
+              valueText: `${val.used} / ${limit}`,
+              detail: null
+            });
+          }
+        }
+      }
+    }
+
+    return bars;
+  }
+
+  /**
+   * Render rate limit details section.
+   */
+  function renderRateLimits(data) {
+    const card = document.getElementById('rate-limit-card');
+    const body = document.getElementById('rate-limit-body');
+
+    if (!data.rateLimit && !data.usage) {
+      card.classList.add('hidden');
+      return;
+    }
+
+    card.classList.remove('hidden');
+    const info = data.rateLimit || data.usage || {};
+    let html = '';
+
+    // Show reset time if available
+    const resetAt = info.reset_at || info.resetsAt || info.next_reset;
+    if (resetAt) {
+      html += `<div class="info-row">
+        <span class="info-label">Resets</span>
+        <span class="info-value">${formatResetTime(resetAt)}</span>
+      </div>`;
+    }
+
+    // Show any additional useful fields
+    const interestingKeys = ['tier', 'plan', 'period', 'interval', 'model'];
+    for (const [key, val] of Object.entries(info)) {
+      if (interestingKeys.some(k => key.toLowerCase().includes(k)) && typeof val !== 'object') {
+        html += `<div class="info-row">
+          <span class="info-label">${formatLabel(key)}</span>
+          <span class="info-value">${escapeHtml(String(val))}</span>
+        </div>`;
+      }
+    }
+
+    if (html === '') {
+      card.classList.add('hidden');
+    } else {
+      body.innerHTML = html;
+    }
+  }
+
+  /**
+   * Render raw JSON details (collapsible).
+   */
+  function renderDetails(data) {
+    const filtered = {
+      organization: data.organization,
+      usage: data.usage,
+      rateLimit: data.rateLimit,
+      settings: data.settings
+    };
+    // Remove null values for cleaner display
+    for (const key of Object.keys(filtered)) {
+      if (!filtered[key]) delete filtered[key];
+    }
+    document.getElementById('details-json').textContent = JSON.stringify(filtered, null, 2);
+  }
+
+  // ─── History Chart ─────────────────────────────────────────
+
+  async function loadHistory() {
+    const result = await sendMessage({ type: 'POPUP_GET_HISTORY' });
+    if (!result || !result.ok || Object.keys(result.history || {}).length < 2) {
+      document.getElementById('history-section').classList.add('hidden');
+      return;
+    }
+
+    document.getElementById('history-section').classList.remove('hidden');
+
+    if (historyChart) {
+      historyChart.destroy();
+      historyChart = null;
+    }
+
+    const dates = Object.keys(result.history).sort();
     const labels = dates.map(d => {
       const parts = d.split('-');
       const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       return `${months[parseInt(parts[1]) - 1]} ${parseInt(parts[2])}`;
     });
 
-    const ctx = document.getElementById('daily-chart').getContext('2d');
-    dailyChart = new Chart(ctx, {
+    // Try to extract a percentage or used value from each snapshot
+    const dataPoints = dates.map(d => {
+      const snap = result.history[d];
+      return extractSnapshotValue(snap);
+    });
+
+    const ctx = document.getElementById('history-chart').getContext('2d');
+    historyChart = new Chart(ctx, {
       type: 'line',
       data: {
         labels: labels,
-        datasets: [
-          {
-            label: 'Hours',
-            data: durationData,
-            borderColor: '#d97706',
-            backgroundColor: 'rgba(217, 119, 6, 0.1)',
-            fill: true,
-            tension: 0.3,
-            yAxisID: 'y'
-          },
-          {
-            label: 'Messages',
-            data: messageData,
-            borderColor: '#6366f1',
-            backgroundColor: 'rgba(99, 102, 241, 0.1)',
-            fill: false,
-            tension: 0.3,
-            yAxisID: 'y1'
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } }
-        },
-        scales: {
-          x: {
-            ticks: { font: { size: 9 }, maxRotation: 45 }
-          },
-          y: {
-            type: 'linear',
-            position: 'left',
-            title: { display: true, text: 'Hours', font: { size: 10 } },
-            ticks: { font: { size: 9 } },
-            beginAtZero: true
-          },
-          y1: {
-            type: 'linear',
-            position: 'right',
-            title: { display: true, text: 'Messages', font: { size: 10 } },
-            ticks: { font: { size: 9 } },
-            beginAtZero: true,
-            grid: { drawOnChartArea: false }
-          }
-        }
-      }
-    });
-  }
-
-  /**
-   * Render the messages-by-day-of-week bar chart.
-   */
-  async function renderDowChart() {
-    const dowAgg = await Storage.getDayOfWeekAggregates();
-
-    const data = DAY_NAMES.map((_, i) => {
-      const agg = dowAgg[i];
-      return agg ? agg.messages : 0;
-    });
-
-    const ctx = document.getElementById('dow-chart').getContext('2d');
-    dowChart = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: DAY_NAMES,
         datasets: [{
-          label: 'Messages',
-          data: data,
-          backgroundColor: 'rgba(217, 119, 6, 0.7)',
+          label: 'Usage %',
+          data: dataPoints,
           borderColor: '#d97706',
-          borderWidth: 1,
-          borderRadius: 4
+          backgroundColor: 'rgba(217, 119, 6, 0.1)',
+          fill: true,
+          tension: 0.3
         }]
       },
       options: {
@@ -390,11 +401,12 @@
           legend: { display: false }
         },
         scales: {
-          x: { ticks: { font: { size: 10 } } },
+          x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
           y: {
             beginAtZero: true,
-            ticks: { font: { size: 9 } },
-            title: { display: true, text: 'Messages', font: { size: 10 } }
+            max: 100,
+            title: { display: true, text: 'Usage %', font: { size: 10 } },
+            ticks: { font: { size: 9 } }
           }
         }
       }
@@ -402,52 +414,100 @@
   }
 
   /**
-   * Render the activity-by-hour bar chart (0-23 hours).
+   * Extract a usage percentage from a history snapshot.
    */
-  async function renderHourlyChart() {
-    const hourlyAgg = await Storage.getHourlyAggregates();
-
-    // Build data for all 24 hours
-    const data = [];
-    const labels = [];
-    for (let h = 0; h < 24; h++) {
-      const agg = hourlyAgg[h];
-      data.push(agg ? agg.messages : 0);
-      // Label: 12AM, 1AM, ..., 12PM, 1PM, ...
-      const ampm = h >= 12 ? 'PM' : 'AM';
-      const h12 = h % 12 || 12;
-      labels.push(`${h12}${ampm}`);
+  function extractSnapshotValue(snap) {
+    if (!snap) return 0;
+    const rl = snap.rateLimit || {};
+    if (typeof rl.percentage_used === 'number') return rl.percentage_used;
+    if (typeof rl.messages_remaining === 'number' && typeof rl.messages_limit === 'number') {
+      const used = rl.messages_limit - rl.messages_remaining;
+      return rl.messages_limit > 0 ? (used / rl.messages_limit) * 100 : 0;
     }
+    if (typeof rl.remaining === 'number' && typeof rl.limit === 'number') {
+      const used = rl.limit - rl.remaining;
+      return rl.limit > 0 ? (used / rl.limit) * 100 : 0;
+    }
+    return 0;
+  }
 
-    const ctx = document.getElementById('hourly-chart').getContext('2d');
-    hourlyChart = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: labels,
-        datasets: [{
-          label: 'Messages',
-          data: data,
-          backgroundColor: 'rgba(99, 102, 241, 0.7)',
-          borderColor: '#6366f1',
-          borderWidth: 1,
-          borderRadius: 3
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false }
-        },
-        scales: {
-          x: { ticks: { font: { size: 8 }, maxRotation: 45 } },
-          y: {
-            beginAtZero: true,
-            ticks: { font: { size: 9 } },
-            title: { display: true, text: 'Messages', font: { size: 10 } }
-          }
-        }
-      }
+  // ─── UI Helpers ────────────────────────────────────────────
+
+  function setupRefreshButton() {
+    document.getElementById('refresh-btn').addEventListener('click', refreshData);
+  }
+
+  function setupDetailsToggle() {
+    document.getElementById('details-toggle').addEventListener('click', () => {
+      const body = document.getElementById('details-body');
+      const arrow = document.getElementById('toggle-arrow');
+      body.classList.toggle('hidden');
+      arrow.textContent = body.classList.contains('hidden') ? '\u25B6' : '\u25BC';
+    });
+  }
+
+  function setStatus(text) {
+    document.getElementById('status-text').textContent = text;
+  }
+
+  function setRefreshSpinning(spinning) {
+    const btn = document.getElementById('refresh-btn');
+    if (spinning) {
+      btn.classList.add('spinning');
+      btn.disabled = true;
+    } else {
+      btn.classList.remove('spinning');
+      btn.disabled = false;
+    }
+  }
+
+  function showError(msg) {
+    document.getElementById('error-card').classList.remove('hidden');
+    document.getElementById('error-text').textContent = msg;
+  }
+
+  // ─── Formatting Helpers ────────────────────────────────────
+
+  function formatTimeAgo(timestamp) {
+    const diff = Date.now() - timestamp;
+    if (diff < 60000) return 'just now';
+    if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+    if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+    return Math.floor(diff / 86400000) + 'd ago';
+  }
+
+  function formatResetTime(resetAt) {
+    try {
+      const d = new Date(resetAt);
+      if (isNaN(d.getTime())) return resetAt;
+      const now = new Date();
+      const diffMs = d - now;
+      if (diffMs < 0) return 'now';
+      if (diffMs < 3600000) return `in ${Math.ceil(diffMs / 60000)}m`;
+      if (diffMs < 86400000) return `in ${Math.ceil(diffMs / 3600000)}h`;
+      return d.toLocaleDateString();
+    } catch (e) {
+      return String(resetAt);
+    }
+  }
+
+  function formatLabel(key) {
+    return key.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // ─── Messaging ─────────────────────────────────────────────
+
+  function sendMessage(msg) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(msg, (response) => {
+        resolve(response);
+      });
     });
   }
 

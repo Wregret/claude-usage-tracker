@@ -1,262 +1,214 @@
 /**
  * Content script for Claude Usage Tracker.
  *
- * Runs on claude.ai pages to:
- * 1. Detect new user and assistant messages via MutationObserver
- * 2. Send heartbeats to keep the background session alive
- * 3. Re-attach observer when navigating between conversations (SPA)
+ * Runs on claude.ai pages. Two jobs:
+ *
+ * 1. Auto-discover the user's organization ID by intercepting fetch()
+ *    calls (every claude.ai API call includes /organizations/{id}/...).
+ *
+ * 2. On demand (when the popup asks), fetch usage data from claude.ai's
+ *    internal API and return it. Because this script runs in the page
+ *    context, the user's session cookies are automatically included.
+ *
+ * Data sources:
+ *   GET /api/organizations                       → org list + plan info
+ *   GET /api/organizations/{id}/usage             → usage/billing data
+ *   GET /api/organizations/{id}/rate_limit_status  → rate limit percentage
+ *   GET /api/organizations/{id}/settings          → plan/subscription details
  */
 
 (() => {
   'use strict';
 
-  /** Heartbeat interval: 30 seconds */
-  const HEARTBEAT_INTERVAL = 30000;
+  /** Discovered organization ID (extracted from intercepted API calls). */
+  let orgId = null;
 
-  /** Track last detected message element to avoid double-counting */
-  let lastDetectedUserEl = null;
-  let lastDetectedAssistantEl = null;
+  // ─── Org ID Discovery ─────────────────────────────────────
+  //
+  // claude.ai's API URLs contain the org ID:
+  //   /api/organizations/abc123-def456/chat_conversations/...
+  //
+  // We intercept fetch() to capture it from any API call.
 
-  /** Main MutationObserver instance */
-  let chatObserver = null;
+  const originalFetch = window.fetch;
 
-  /** Counter to debounce assistant message detection (streaming creates many mutations) */
-  let assistantDebounceTimer = null;
+  window.fetch = async function (...args) {
+    const response = await originalFetch.apply(this, args);
 
-  // ─── Message Detection ───────────────────────────────────────
-
-  /**
-   * Check if a DOM node is a user message container.
-   * Uses multiple heuristics for resilience against DOM changes.
-   * @param {Element} node - DOM element to check
-   * @returns {boolean}
-   */
-  function isUserMessage(node) {
-    if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
-
-    // Heuristic 1: data-testid attribute
-    if (node.getAttribute('data-testid')?.includes('human')) return true;
-    if (node.getAttribute('data-testid')?.includes('user')) return true;
-
-    // Heuristic 2: class name patterns
-    const className = node.className || '';
-    if (typeof className === 'string') {
-      if (className.includes('human-turn')) return true;
-      if (className.includes('user-message')) return true;
-    }
-
-    // Heuristic 3: role attribute used in chat UIs
-    if (node.getAttribute('data-role') === 'user') return true;
-
-    return false;
-  }
-
-  /**
-   * Check if a DOM node is an assistant message container.
-   * @param {Element} node - DOM element to check
-   * @returns {boolean}
-   */
-  function isAssistantMessage(node) {
-    if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
-
-    // Heuristic 1: data-testid attribute
-    if (node.getAttribute('data-testid')?.includes('assistant')) return true;
-    if (node.getAttribute('data-testid')?.includes('ai')) return true;
-
-    // Heuristic 2: class name patterns
-    const className = node.className || '';
-    if (typeof className === 'string') {
-      if (className.includes('assistant-turn')) return true;
-      if (className.includes('ai-message')) return true;
-    }
-
-    // Heuristic 3: role attribute
-    if (node.getAttribute('data-role') === 'assistant') return true;
-
-    // Heuristic 4: streaming indicator (Claude shows this during response)
-    if (node.getAttribute('data-is-streaming') !== null) return true;
-
-    return false;
-  }
-
-  /**
-   * Recursively search a node and its children for message elements.
-   * Needed because MutationObserver may report a parent wrapper, not the
-   * message element directly.
-   * @param {Element} node - Root node to search
-   */
-  function checkNodeForMessages(node) {
-    if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
-
-    // Check the node itself
-    if (isUserMessage(node) && node !== lastDetectedUserEl) {
-      lastDetectedUserEl = node;
-      sendMessage('user');
-    }
-
-    if (isAssistantMessage(node) && node !== lastDetectedAssistantEl) {
-      lastDetectedAssistantEl = node;
-      // Debounce assistant messages since streaming causes many mutations
-      clearTimeout(assistantDebounceTimer);
-      assistantDebounceTimer = setTimeout(() => {
-        sendMessage('assistant');
-      }, 2000); // Wait 2s after last mutation to count as one message
-    }
-
-    // Check children (one level deep to avoid excessive recursion)
-    for (const child of node.children) {
-      if (isUserMessage(child) && child !== lastDetectedUserEl) {
-        lastDetectedUserEl = child;
-        sendMessage('user');
-      }
-      if (isAssistantMessage(child) && child !== lastDetectedAssistantEl) {
-        lastDetectedAssistantEl = child;
-        clearTimeout(assistantDebounceTimer);
-        assistantDebounceTimer = setTimeout(() => {
-          sendMessage('assistant');
-        }, 2000);
-      }
-    }
-  }
-
-  /**
-   * Send a message detection event to the background service worker.
-   * @param {string} role - 'user' or 'assistant'
-   */
-  function sendMessage(role) {
     try {
-      chrome.runtime.sendMessage({
-        type: 'MESSAGE_DETECTED',
-        role: role
-      });
-    } catch (e) {
-      // Extension context may have been invalidated (e.g., extension updated)
-      console.debug('[Claude Tracker] Could not send message:', e.message);
-    }
-  }
-
-  // ─── Observer Setup ──────────────────────────────────────────
-
-  /**
-   * Find the conversation container in the DOM.
-   * Tries multiple selectors for resilience.
-   * @returns {Element|null} The conversation container element
-   */
-  function findConversationContainer() {
-    // Try common selectors used by claude.ai
-    const selectors = [
-      '[data-testid="conversation"]',
-      '[class*="conversation"]',
-      '[class*="chat-messages"]',
-      'main [role="log"]',
-      'main [role="main"]',
-      'main'
-    ];
-
-    for (const selector of selectors) {
-      const el = document.querySelector(selector);
-      if (el) return el;
-    }
-
-    return document.body; // Fallback to body
-  }
-
-  /**
-   * Attach the MutationObserver to the conversation container.
-   * Disconnects any existing observer first.
-   */
-  function attachObserver() {
-    if (chatObserver) {
-      chatObserver.disconnect();
-    }
-
-    const container = findConversationContainer();
-
-    chatObserver = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        // Check added nodes for new messages
-        for (const node of mutation.addedNodes) {
-          checkNodeForMessages(node);
+      const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+      // Extract org ID from API URL pattern: /api/organizations/{uuid}/
+      if (!orgId) {
+        const match = url.match(/\/api\/organizations\/([a-f0-9-]{36})\//i);
+        if (match) {
+          orgId = match[1];
+          // Persist for later use by the popup
+          chrome.runtime.sendMessage({ type: 'ORG_ID_DISCOVERED', orgId });
         }
       }
-    });
 
-    chatObserver.observe(container, {
-      childList: true,
-      subtree: true
-    });
-  }
-
-  /**
-   * Watch for SPA navigation (URL changes without full page reload).
-   * Re-attaches the observer when the user switches conversations.
-   */
-  function watchForNavigation() {
-    let lastUrl = location.href;
-
-    // Use a MutationObserver on the title or URL to detect SPA navigation
-    const navObserver = new MutationObserver(() => {
-      if (location.href !== lastUrl) {
-        lastUrl = location.href;
-        // Reset message tracking on conversation change
-        lastDetectedUserEl = null;
-        lastDetectedAssistantEl = null;
-        // Re-attach observer after a short delay for DOM to update
-        setTimeout(attachObserver, 1000);
-      }
-    });
-
-    navObserver.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-  }
-
-  // ─── Heartbeat ─────────────────────────────────────────────
-
-  /**
-   * Send periodic heartbeats to the background to keep the session alive.
-   * Only sends when the page is visible (not backgrounded).
-   */
-  function startHeartbeat() {
-    setInterval(() => {
-      if (document.visibilityState === 'visible') {
+      // Capture usage-related API responses passively
+      if (url.includes('/usage') || url.includes('/rate_limit')) {
         try {
-          chrome.runtime.sendMessage({ type: 'HEARTBEAT' });
+          const cloned = response.clone();
+          const data = await cloned.json();
+          chrome.runtime.sendMessage({
+            type: 'USAGE_DATA_INTERCEPTED',
+            url: url,
+            data: data,
+            timestamp: Date.now()
+          });
         } catch (e) {
-          // Extension context invalidated
-          console.debug('[Claude Tracker] Heartbeat failed:', e.message);
+          // Not JSON or stream error — ignore
         }
       }
-    }, HEARTBEAT_INTERVAL);
-  }
+    } catch (e) {
+      // Never break the page
+    }
 
-  // ─── Initialization ────────────────────────────────────────
+    return response;
+  };
+
+  // ─── Message Handler (popup/background requests) ────────────
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'FETCH_USAGE') {
+      fetchUsageData().then(sendResponse);
+      return true; // Keep channel open for async
+    }
+    if (message.type === 'GET_ORG_ID') {
+      sendResponse({ orgId });
+      return false;
+    }
+  });
 
   /**
-   * Initialize the content script after a short delay to ensure
-   * the claude.ai DOM is fully loaded.
+   * Fetch usage data from claude.ai's internal API.
+   * Tries multiple endpoints and returns whatever data we can get.
+   *
+   * @returns {Promise<Object>} Combined usage data
    */
-  function init() {
-    // Wait a bit for the SPA to finish rendering
-    setTimeout(() => {
-      attachObserver();
-      watchForNavigation();
-      startHeartbeat();
+  async function fetchUsageData() {
+    const result = {
+      ok: false,
+      orgId: null,
+      organization: null,
+      usage: null,
+      rateLimit: null,
+      error: null,
+      timestamp: Date.now()
+    };
 
-      // Send initial heartbeat to signal we're on claude.ai
-      try {
-        chrome.runtime.sendMessage({ type: 'HEARTBEAT' });
-      } catch (e) {
-        console.debug('[Claude Tracker] Initial heartbeat failed:', e.message);
+    try {
+      // Step 1: Get org ID if we don't have it
+      if (!orgId) {
+        orgId = await discoverOrgId();
       }
-    }, 2000);
+      if (!orgId) {
+        result.error = 'Could not find organization ID. Please open a chat on claude.ai first.';
+        return result;
+      }
+      result.orgId = orgId;
+
+      // Step 2: Fetch from multiple endpoints in parallel
+      const [orgData, usageData, rateLimitData, settingsData] = await Promise.allSettled([
+        safeFetch(`/api/organizations/${orgId}`),
+        safeFetch(`/api/organizations/${orgId}/usage`),
+        safeFetch(`/api/organizations/${orgId}/rate_limit_status`),
+        safeFetch(`/api/organizations/${orgId}/settings`)
+      ]);
+
+      // Merge whatever we got
+      if (orgData.status === 'fulfilled' && orgData.value) {
+        result.organization = orgData.value;
+      }
+      if (usageData.status === 'fulfilled' && usageData.value) {
+        result.usage = usageData.value;
+      }
+      if (rateLimitData.status === 'fulfilled' && rateLimitData.value) {
+        result.rateLimit = rateLimitData.value;
+      }
+      if (settingsData.status === 'fulfilled' && settingsData.value) {
+        result.settings = settingsData.value;
+      }
+
+      result.ok = !!(result.usage || result.rateLimit || result.organization);
+      if (!result.ok) {
+        result.error = 'Could not fetch usage data. API endpoints may have changed.';
+      }
+    } catch (e) {
+      result.error = e.message;
+    }
+
+    return result;
   }
 
-  // Start when DOM is ready
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
+  /**
+   * Try to discover the org ID by fetching the organizations list.
+   * Falls back to parsing the page URL or DOM.
+   * @returns {Promise<string|null>}
+   */
+  async function discoverOrgId() {
+    // Method 1: Fetch /api/organizations
+    try {
+      const resp = await originalFetch('/api/organizations', {
+        credentials: 'include',
+        headers: { 'Accept': 'application/json' }
+      });
+      if (resp.ok) {
+        const orgs = await resp.json();
+        if (Array.isArray(orgs) && orgs.length > 0) {
+          return orgs[0].uuid || orgs[0].id || null;
+        }
+      }
+    } catch (e) {
+      // Continue to fallback
+    }
+
+    // Method 2: Look for org ID in the current page URL
+    const urlMatch = window.location.href.match(/\/organizations\/([a-f0-9-]{36})/i);
+    if (urlMatch) return urlMatch[1];
+
+    // Method 3: Look for org ID in meta tags or data attributes
+    const metaOrg = document.querySelector('meta[name="organization-id"]');
+    if (metaOrg) return metaOrg.getAttribute('content');
+
+    return null;
   }
+
+  /**
+   * Fetch a claude.ai API endpoint with error handling.
+   * Returns parsed JSON or null on failure.
+   * @param {string} path - API path (e.g. "/api/organizations/{id}/usage")
+   * @returns {Promise<Object|null>}
+   */
+  async function safeFetch(path) {
+    try {
+      const resp = await originalFetch(path, {
+        credentials: 'include',
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!resp.ok) return null;
+      const contentType = resp.headers.get('content-type') || '';
+      if (!contentType.includes('json')) return null;
+      return await resp.json();
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ─── Initial Discovery ─────────────────────────────────────
+
+  // Try to discover org ID on page load (async, don't block)
+  setTimeout(() => {
+    if (!orgId) {
+      discoverOrgId().then(id => {
+        if (id) {
+          orgId = id;
+          chrome.runtime.sendMessage({ type: 'ORG_ID_DISCOVERED', orgId: id });
+        }
+      });
+    }
+  }, 3000);
+
 })();
