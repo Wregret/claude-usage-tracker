@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Usage Tracker</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <h1>Claude Usage Tracker</h1>
+  </header>
+
+  <!-- Tab Navigation -->
+  <nav class="tabs">
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="sessions">Sessions</button>
+    <button class="tab" data-tab="analytics">Analytics</button>
+  </nav>
+
+  <!-- Dashboard Tab -->
+  <div id="dashboard" class="tab-content active">
+    <!-- Current Session Card -->
+    <div class="card" id="current-session-card">
+      <div class="card-header">
+        <span class="status-dot active"></span>
+        <h3>Current Session</h3>
+      </div>
+      <div class="card-body">
+        <div class="stat-row">
+          <div class="stat">
+            <span class="stat-value" id="session-duration">--</span>
+            <span class="stat-label">Duration</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="session-messages">0</span>
+            <span class="stat-label">Messages</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- No Active Session Card (shown when no session) -->
+    <div class="card hidden" id="no-session-card">
+      <div class="card-body center">
+        <p class="muted">No active session. Visit <strong>claude.ai</strong> to start tracking.</p>
+      </div>
+    </div>
+
+    <!-- Today's Summary -->
+    <div class="card">
+      <div class="card-header">
+        <h3>Today</h3>
+      </div>
+      <div class="card-body">
+        <div class="stat-row">
+          <div class="stat">
+            <span class="stat-value" id="today-duration">--</span>
+            <span class="stat-label">Total Time</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="today-messages">0</span>
+            <span class="stat-label">Messages</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="today-sessions">0</span>
+            <span class="stat-label">Sessions</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- This Week Summary -->
+    <div class="card">
+      <div class="card-header">
+        <h3>This Week</h3>
+      </div>
+      <div class="card-body">
+        <div class="stat-row">
+          <div class="stat">
+            <span class="stat-value" id="week-duration">--</span>
+            <span class="stat-label">Total Time</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="week-messages">0</span>
+            <span class="stat-label">Messages</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="week-sessions">0</span>
+            <span class="stat-label">Sessions</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Stats -->
+    <div class="card">
+      <div class="card-header">
+        <h3>Quick Stats</h3>
+      </div>
+      <div class="card-body">
+        <div class="quick-stat">
+          <span class="quick-stat-label">Most Active Day</span>
+          <span class="quick-stat-value" id="most-active-day">--</span>
+        </div>
+        <div class="quick-stat">
+          <span class="quick-stat-label">Peak Hour</span>
+          <span class="quick-stat-value" id="peak-hour">--</span>
+        </div>
+        <div class="quick-stat">
+          <span class="quick-stat-label">Avg Session</span>
+          <span class="quick-stat-value" id="avg-session">--</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sessions Tab -->
+  <div id="sessions" class="tab-content">
+    <div id="sessions-list" class="sessions-list">
+      <p class="muted center">Loading sessions...</p>
+    </div>
+  </div>
+
+  <!-- Analytics Tab -->
+  <div id="analytics" class="tab-content">
+    <!-- Date Range Selector -->
+    <div class="range-selector">
+      <button class="range-btn active" data-range="7">7 Days</button>
+      <button class="range-btn" data-range="30">30 Days</button>
+      <button class="range-btn" data-range="all">All Time</button>
+    </div>
+
+    <!-- Daily Usage Line Chart -->
+    <div class="card">
+      <div class="card-header">
+        <h3>Daily Usage</h3>
+      </div>
+      <div class="card-body chart-container">
+        <canvas id="daily-chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Messages by Day of Week -->
+    <div class="card">
+      <div class="card-header">
+        <h3>Messages by Day of Week</h3>
+      </div>
+      <div class="card-body chart-container">
+        <canvas id="dow-chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Activity by Hour -->
+    <div class="card">
+      <div class="card-header">
+        <h3>Activity by Hour</h3>
+      </div>
+      <div class="card-body chart-container">
+        <canvas id="hourly-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts: load Chart.js, then time utils, then popup logic -->
+  <script src="../lib/chart.min.js"></script>
+  <script src="../utils/time.js"></script>
+  <script src="../lib/storage.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
