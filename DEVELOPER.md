@@ -20,7 +20,9 @@ claude-usage-tracker/
 │   └── time.js                   # Shared formatting helpers
 ├── icons/                        # 16/48/128px PNGs
 ├── tests/
-│   └── test_extension.py         # 86-test validation suite
+│   └── test_extension.py         # 88-test validation suite
+├── .gitignore
+├── LICENSE                       # MIT
 ├── README.md
 └── DEVELOPER.md
 ```
@@ -71,12 +73,12 @@ Popup                          Service Worker                Content Script (on 
 python3 tests/test_extension.py
 ```
 
-86 tests covering:
+88 tests covering:
 
 | Suite | What it validates |
 |-------|-------------------|
-| TestManifest | MV3 schema, permissions, file refs, no `type: module` |
-| TestServiceWorker | No importScripts, message handling, caching, history, alarms |
+| TestManifest | MV3 schema, permissions (incl. scripting), file refs, no `type: module` |
+| TestServiceWorker | No importScripts, message handling, caching, history, alarms, script injection fallback |
 | TestContentScript | Fetch interception, org discovery, API fetching, credentials |
 | TestPopup | Usage bars, color coding, refresh, error handling, chart |
 | TestMessageContract | All message types match across content ↔ SW ↔ popup |
@@ -90,7 +92,7 @@ python3 tests/test_extension.py
 2. Identify the API calls that return usage data.
 3. Update `content-script.js`:
    - `fetchUsageData()` — add new endpoint paths
-   - `isCompletionEndpoint()` — if URL patterns changed
+   - `discoverOrgId()` — if org ID location changed
 4. Update `popup.js`:
    - `extractUsageBars()` — add parsing for the new response shape
    - `extractPlanName()` in `utils/time.js` — if plan info moved

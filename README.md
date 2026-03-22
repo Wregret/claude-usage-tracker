@@ -28,7 +28,7 @@ Because the content script runs in the page context, your session cookies are au
 
 1. **Clone** this repository:
    ```bash
-   git clone https://github.com/your-username/claude-usage-tracker.git
+   git clone https://github.com/Wregret/claude-usage-tracker.git
    ```
 
 2. Open Chrome → `chrome://extensions/`
