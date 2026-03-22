@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Test suite for Claude Usage Tracker Chrome Extension (v2).
+Test suite for Claude Usage Tracker Chrome Extension.
 
 The extension mirrors claude.ai/settings/usage by:
-  - Intercepting fetch() to discover the org ID
   - Fetching usage data from claude.ai's internal API
   - Displaying usage percentage bars in the popup
 
@@ -11,7 +10,6 @@ Run:  python3 tests/test_extension.py
 """
 
 import json
-import os
 import re
 import struct
 import unittest
@@ -41,15 +39,12 @@ class TestManifest(unittest.TestCase):
         perms = set(self.m["permissions"])
         self.assertIn("storage", perms)
         self.assertIn("alarms", perms)
+        self.assertIn("scripting", perms)
 
     def test_no_unnecessary_permissions(self):
         perms = set(self.m["permissions"])
-        allowed = {"storage", "alarms", "tabs", "activeTab", "scripting"}
+        allowed = {"storage", "alarms", "tabs", "scripting"}
         self.assertEqual(perms - allowed, set())
-
-    def test_has_scripting_permission(self):
-        """Needed to inject content script into already-open tabs."""
-        self.assertIn("scripting", self.m["permissions"])
 
     def test_host_permissions(self):
         self.assertTrue(any("claude.ai" in h for h in self.m.get("host_permissions", [])))
@@ -90,7 +85,7 @@ class TestServiceWorker(unittest.TestCase):
             self.code = f.read()
 
     def test_no_import_scripts(self):
-        """CRITICAL: caused repeated extension load failures."""
+        """CRITICAL: importScripts caused repeated extension load failures."""
         for i, line in enumerate(self.code.split('\n'), 1):
             s = line.strip()
             if s.startswith('//') or s.startswith('*'):
@@ -100,15 +95,10 @@ class TestServiceWorker(unittest.TestCase):
     def test_handles_org_id_discovered(self):
         self.assertIn("ORG_ID_DISCOVERED", self.code)
 
-    def test_handles_usage_data_intercepted(self):
-        self.assertIn("USAGE_DATA_INTERCEPTED", self.code)
-
     def test_handles_popup_fetch_usage(self):
-        """Must handle popup's request for fresh data."""
         self.assertIn("POPUP_FETCH_USAGE", self.code)
 
     def test_handles_popup_get_cached(self):
-        """Must handle popup's request for cached data."""
         self.assertIn("POPUP_GET_CACHED", self.code)
 
     def test_handles_popup_get_history(self):
@@ -120,24 +110,19 @@ class TestServiceWorker(unittest.TestCase):
         self.assertIn("FETCH_USAGE", self.code)
 
     def test_queries_claude_tabs(self):
-        """Must find claude.ai tabs to relay messages."""
         self.assertIn("claude.ai", self.code)
 
     def test_caches_usage_data(self):
-        """Must cache fetched data in chrome.storage.local."""
         self.assertIn("chrome.storage.local.set", self.code)
         self.assertIn("cachedUsage", self.code)
 
     def test_saves_usage_history(self):
-        """Must save daily snapshots for trend tracking."""
         self.assertIn("usageHistory", self.code)
 
     def test_prunes_old_history(self):
-        """Must not keep data indefinitely."""
-        self.assertIn("90", self.code)  # 90 days retention
+        self.assertIn("90", self.code)
 
     def test_has_periodic_refresh(self):
-        """Must set up alarm for periodic data refresh."""
         self.assertIn("chrome.alarms.create", self.code)
         self.assertIn("chrome.alarms.onAlarm.addListener", self.code)
 
@@ -147,6 +132,21 @@ class TestServiceWorker(unittest.TestCase):
     def test_injects_content_script_on_failure(self):
         """Must fall back to chrome.scripting.executeScript if content script isn't loaded."""
         self.assertIn("chrome.scripting.executeScript", self.code)
+
+    def test_validates_sender(self):
+        """Must only accept messages from own extension."""
+        self.assertIn("sender.id", self.code)
+        self.assertIn("chrome.runtime.id", self.code)
+
+    def test_validates_org_id_format(self):
+        """Must validate org ID is a UUID before storing."""
+        self.assertTrue(re.search(r'[a-f0-9].*-.*36', self.code),
+            "Must have UUID pattern validation for org ID")
+
+    def test_no_intercepted_data(self):
+        """Passive interception was removed — no interceptedData storage."""
+        self.assertNotIn("interceptedData", self.code)
+        self.assertNotIn("USAGE_DATA_INTERCEPTED", self.code)
 
     def test_balanced_braces(self):
         self.assertEqual(self.code.count('{'), self.code.count('}'))
@@ -168,57 +168,50 @@ class TestContentScript(unittest.TestCase):
     def test_uses_strict_mode(self):
         self.assertIn("'use strict'", self.code)
 
-    def test_intercepts_fetch(self):
-        """Must monkey-patch window.fetch to discover org ID."""
-        self.assertIn("window.fetch", self.code)
-        self.assertIn("originalFetch", self.code)
+    def test_no_fetch_monkey_patch(self):
+        """Fetch interception doesn't work in MV3 isolated world — must not exist."""
+        self.assertNotIn("window.fetch", self.code)
+        self.assertNotIn("originalFetch", self.code)
+        self.assertNotIn("USAGE_DATA_INTERCEPTED", self.code)
+
+    def test_discovers_org_id(self):
+        """Must discover org ID via API fetch."""
+        self.assertIn("discoverOrgId", self.code)
+        self.assertIn("/api/organizations", self.code)
 
     def test_discovers_org_id_from_url(self):
-        """Must extract org UUID from API URL patterns."""
-        self.assertIn("organizations", self.code)
-        # Should have a regex for UUID extraction
-        self.assertTrue(re.search(r'[a-f0-9].*-.*36', self.code),
-            "Must have UUID pattern matching for org ID")
+        """Must have UUID pattern matching as fallback."""
+        self.assertTrue(re.search(r'[a-f0-9].*-.*36', self.code))
 
     def test_sends_org_id_to_background(self):
         self.assertIn("ORG_ID_DISCOVERED", self.code)
         self.assertIn("chrome.runtime.sendMessage", self.code)
 
     def test_handles_fetch_usage_request(self):
-        """Must respond to FETCH_USAGE messages from popup/background."""
         self.assertIn("FETCH_USAGE", self.code)
 
     def test_fetches_usage_api(self):
-        """Must fetch from /api/organizations/{id}/usage or similar."""
         self.assertIn("/api/organizations/", self.code)
         self.assertIn("/usage", self.code)
 
     def test_fetches_rate_limit_api(self):
-        """Must try to fetch rate limit data."""
         self.assertIn("rate_limit", self.code)
 
     def test_uses_credentials_include(self):
-        """Must include cookies when fetching API (for auth)."""
         self.assertIn("credentials", self.code)
         self.assertIn("include", self.code)
 
     def test_fetches_multiple_endpoints(self):
-        """Must try multiple API endpoints for resilience."""
         self.assertIn("Promise.allSettled", self.code)
 
     def test_has_safe_fetch(self):
-        """Must have error-handling wrapper for API calls."""
         self.assertIn("safeFetch", self.code)
 
     def test_handles_get_org_id_request(self):
         self.assertIn("GET_ORG_ID", self.code)
 
-    def test_intercepts_usage_responses(self):
-        """Must passively capture usage-related API responses."""
-        self.assertIn("USAGE_DATA_INTERCEPTED", self.code)
-
     def test_discovers_org_id_on_load(self):
-        """Must attempt org ID discovery when page loads."""
+        self.assertIn("setTimeout", self.code)
         self.assertIn("discoverOrgId", self.code)
 
     def test_no_import_scripts(self):
@@ -267,7 +260,6 @@ class TestPopup(unittest.TestCase):
         self.assertIn('id="status-text"', self.html)
 
     def test_has_usage_bars_container(self):
-        """Must have container for the usage percentage bars."""
         self.assertIn('id="usage-bars"', self.html)
 
     def test_has_error_card(self):
@@ -277,7 +269,6 @@ class TestPopup(unittest.TestCase):
         self.assertIn('id="plan-badge"', self.html)
 
     def test_has_details_section(self):
-        """Must have collapsible raw details section."""
         self.assertIn('id="details-body"', self.html)
         self.assertIn('id="details-json"', self.html)
 
@@ -293,40 +284,45 @@ class TestPopup(unittest.TestCase):
         self.assertTrue(re.search(r'\(\s*\(\s*\)\s*=>\s*\{', self.js))
 
     def test_js_sends_popup_fetch_usage(self):
-        """Must request fresh data from background."""
         self.assertIn("POPUP_FETCH_USAGE", self.js)
 
     def test_js_sends_popup_get_cached(self):
-        """Must request cached data for fast initial load."""
         self.assertIn("POPUP_GET_CACHED", self.js)
 
     def test_js_sends_popup_get_history(self):
         self.assertIn("POPUP_GET_HISTORY", self.js)
 
     def test_js_renders_usage_bars(self):
-        """Must render usage percentage bars."""
         self.assertIn("renderUsageBars", self.js)
         self.assertIn("usage-bar-fill", self.js)
 
     def test_js_extracts_usage_bars(self):
-        """Must handle multiple API response shapes."""
         self.assertIn("extractUsageBars", self.js)
 
-    def test_js_handles_percentage(self):
-        """Must calculate and display percentages."""
-        self.assertIn("percentage", self.js)
+    def test_js_handles_utilization(self):
+        """Must handle the actual API shape: { utilization: N, resets_at: ... }."""
+        self.assertIn("utilization", self.js)
 
     def test_js_color_codes_bars(self):
-        """Bars must be color-coded: green/yellow/red by usage level."""
         self.assertIn("bar-ok", self.js)
         self.assertIn("bar-warning", self.js)
         self.assertIn("bar-danger", self.js)
+
+    def test_js_escapes_all_html_output(self):
+        """All innerHTML interpolations must use escapeHtml."""
+        self.assertIn("escapeHtml", self.js)
+        # renderRateLimits must escape formatResetTime and formatLabel
+        rate_limit_section = self.js[self.js.index("renderRateLimits"):]
+        rate_limit_section = rate_limit_section[:rate_limit_section.index("\n  function ")]
+        self.assertNotIn("${formatResetTime(", rate_limit_section,
+            "formatResetTime output must be escaped in innerHTML")
+        self.assertNotIn("${formatLabel(", rate_limit_section,
+            "formatLabel output must be escaped in innerHTML")
 
     def test_js_shows_errors(self):
         self.assertIn("showError", self.js)
 
     def test_js_shows_cache_age(self):
-        """Must indicate when data was last fetched."""
         self.assertIn("fromCache", self.js)
         self.assertIn("formatTimeAgo", self.js)
 
@@ -354,7 +350,6 @@ class TestPopup(unittest.TestCase):
     # ─── CSS ──────────────────────────────────────────
 
     def test_css_has_usage_bar_styles(self):
-        """Must have styles for the percentage bar."""
         self.assertIn(".usage-bar-track", self.css)
         self.assertIn(".usage-bar-fill", self.css)
 
@@ -393,7 +388,6 @@ class TestMessageContract(unittest.TestCase):
     def test_content_to_bg_messages_handled(self):
         """Messages content script sends must be handled by service worker."""
         sent = set(re.findall(r"type:\s*['\"](\w+)['\"]", self.cs))
-        # FETCH_USAGE is sent by service worker TO content script, not from
         sent.discard("FETCH_USAGE")
         sent.discard("GET_ORG_ID")
         for msg_type in sent:

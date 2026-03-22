@@ -8,7 +8,7 @@ claude-usage-tracker/
 ├── background/
 │   └── service-worker.js         # Message relay, caching, periodic refresh
 ├── content/
-│   └── content-script.js         # Fetch interception, API calls, org discovery
+│   └── content-script.js         # API calls, org discovery
 ├── popup/
 │   ├── popup.html                # Usage bars, rate limits, history chart
 │   ├── popup.css                 # Styles (percentage bars, color coding)
@@ -20,7 +20,7 @@ claude-usage-tracker/
 │   └── time.js                   # Shared formatting helpers
 ├── icons/                        # 16/48/128px PNGs
 ├── tests/
-│   └── test_extension.py         # 88-test validation suite
+│   └── test_extension.py         # Validation suite
 ├── .gitignore
 ├── LICENSE                       # MIT
 ├── README.md
@@ -45,17 +45,17 @@ Popup                          Service Worker                Content Script (on 
   │                                │── cache to storage           │
   │                                │── save daily snapshot        │
   │                                │                              │
-  │                                │   (passive interception)     │
-  │                                │◂── USAGE_DATA_INTERCEPTED ──│
+  │                                │   (on page load)             │
   │                                │◂── ORG_ID_DISCOVERED ───────│
 ```
 
 **Key design decisions:**
-- **Content script fetches the API** (not the service worker) because it runs in the page context with the user's cookies.
+- **Content script fetches the API** (not the service worker) because it runs on claude.ai's origin with the user's cookies.
 - **Service worker is a relay + cache** — it never calls fetch() itself.
+- **Programmatic injection** — if the content script isn't loaded (tab was open before extension install), the service worker injects it via `chrome.scripting.executeScript`.
 - **No importScripts** — the service worker inlines its minimal dependencies. This avoids MV3 path resolution bugs.
 - **Multiple API endpoints tried** — `Promise.allSettled` tries org info, usage, rate limits, and settings in parallel.
-- **Adaptive rendering** — the popup handles multiple possible API response shapes since we can't know the exact format.
+- **Sender validation** — the service worker only accepts messages from its own extension ID.
 
 ## Storage Schema
 
@@ -64,8 +64,7 @@ Popup                          Service Worker                Content Script (on 
 | `orgId` | string | Discovered organization UUID |
 | `cachedUsage` | object | Last fetched usage response |
 | `lastFetchTime` | number | Epoch ms of last successful fetch |
-| `interceptedData` | object | Passively captured API responses |
-| `usageHistory` | object | `{ "YYYY-MM-DD": snapshot }` for trend chart |
+| `usageHistory` | object | `{ "YYYY-MM-DD": snapshot }` for trend chart (90-day retention) |
 
 ## Testing
 
@@ -73,14 +72,12 @@ Popup                          Service Worker                Content Script (on 
 python3 tests/test_extension.py
 ```
 
-88 tests covering:
-
 | Suite | What it validates |
 |-------|-------------------|
 | TestManifest | MV3 schema, permissions (incl. scripting), file refs, no `type: module` |
-| TestServiceWorker | No importScripts, message handling, caching, history, alarms, script injection fallback |
-| TestContentScript | Fetch interception, org discovery, API fetching, credentials |
-| TestPopup | Usage bars, color coding, refresh, error handling, chart |
+| TestServiceWorker | No importScripts, message handling, caching, history, alarms, script injection fallback, sender validation |
+| TestContentScript | Org discovery, API fetching, credentials |
+| TestPopup | Usage bars, color coding, refresh, error handling, chart, XSS escaping |
 | TestMessageContract | All message types match across content ↔ SW ↔ popup |
 | TestUtils, TestIcons, TestFileStructure, TestPrivacy | Helpers, icons, files, no external requests |
 
@@ -97,10 +94,6 @@ python3 tests/test_extension.py
    - `extractUsageBars()` — add parsing for the new response shape
    - `extractPlanName()` in `utils/time.js` — if plan info moved
 
-### Adding new API response shapes
-
-The popup's `extractUsageBars()` function tries 5+ different response shapes. To add a new one, add another block in the function that checks for the new shape and pushes to the `bars` array.
-
 ### Updating Chart.js
 
 ```bash
@@ -113,5 +106,5 @@ curl -L "https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js" -o lib/c
 |------|------|-----------|
 | API endpoints | `content/content-script.js` | `fetchUsageData()`, `discoverOrgId()` |
 | Response parsing | `popup/popup.js` | `extractUsageBars()`, `renderUsageBars()` |
-| Caching | `background/service-worker.js` | `cacheUsageData()`, `getCachedUsageData()` |
+| Caching | `background/service-worker.js` | `getCachedUsageData()`, `saveUsageSnapshot()` |
 | Theme/colors | `popup/popup.css` | `:root` variables, `.bar-ok/warning/danger` |

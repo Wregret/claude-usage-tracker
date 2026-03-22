@@ -325,7 +325,7 @@
     if (resetAt) {
       html += `<div class="info-row">
         <span class="info-label">Resets</span>
-        <span class="info-value">${formatResetTime(resetAt)}</span>
+        <span class="info-value">${escapeHtml(formatResetTime(resetAt))}</span>
       </div>`;
     }
 
@@ -334,7 +334,7 @@
     for (const [key, val] of Object.entries(info)) {
       if (interestingKeys.some(k => key.toLowerCase().includes(k)) && typeof val !== 'object') {
         html += `<div class="info-row">
-          <span class="info-label">${formatLabel(key)}</span>
+          <span class="info-label">${escapeHtml(formatLabel(key))}</span>
           <span class="info-value">${escapeHtml(String(val))}</span>
         </div>`;
       }

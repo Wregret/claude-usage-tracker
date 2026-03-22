@@ -4,14 +4,14 @@
  * Self-contained (no importScripts).
  *
  * Responsibilities:
- * - Cache usage data received from the content script
  * - Relay FETCH_USAGE requests from popup to the content script
- * - Store org ID and usage snapshots in chrome.storage.local
+ * - Cache usage data in chrome.storage.local
+ * - Store daily usage snapshots for trend tracking
  * - Periodically refresh usage data via alarm
  */
 
 // ═══════════════════════════════════════════════════════════════
-// Time Utilities (inlined)
+// Utilities (inlined to avoid importScripts)
 // ═══════════════════════════════════════════════════════════════
 
 function getDateString(date) {
@@ -19,21 +19,19 @@ function getDateString(date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+const ORG_ID_PATTERN = /^[a-f0-9-]{36}$/i;
+
 // ═══════════════════════════════════════════════════════════════
 // Constants
 // ═══════════════════════════════════════════════════════════════
 
-/** Alarm to periodically refresh usage data */
 const REFRESH_ALARM = 'refreshUsage';
-
-/** Refresh interval: every 5 minutes */
 const REFRESH_INTERVAL_MIN = 5;
 
 // ═══════════════════════════════════════════════════════════════
 // Initialization
 // ═══════════════════════════════════════════════════════════════
 
-// Set up periodic refresh alarm
 chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: REFRESH_INTERVAL_MIN });
 
 // ═══════════════════════════════════════════════════════════════
@@ -41,6 +39,9 @@ chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: REFRESH_INTERVAL_MIN });
 // ═══════════════════════════════════════════════════════════════
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Only accept messages from this extension
+  if (sender.id !== chrome.runtime.id) return false;
+
   handleMessage(message, sender).then(sendResponse);
   return true;
 });
@@ -48,25 +49,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message, sender) {
   switch (message.type) {
 
-    // Content script discovered the org ID
     case 'ORG_ID_DISCOVERED':
+      // Validate org ID format before storing
+      if (!message.orgId || !ORG_ID_PATTERN.test(message.orgId)) {
+        return { ok: false, error: 'Invalid org ID format' };
+      }
       await chrome.storage.local.set({ orgId: message.orgId });
       return { ok: true };
 
-    // Content script intercepted usage data from an API response
-    case 'USAGE_DATA_INTERCEPTED':
-      await cacheUsageData(message.url, message.data, message.timestamp);
-      return { ok: true };
-
-    // Popup requests fresh usage data
     case 'POPUP_FETCH_USAGE':
       return await fetchUsageViaContentScript();
 
-    // Popup requests cached usage data (fast path)
     case 'POPUP_GET_CACHED':
       return await getCachedUsageData();
 
-    // Popup requests usage history
     case 'POPUP_GET_HISTORY':
       return await getUsageHistory();
 
@@ -81,7 +77,6 @@ async function handleMessage(message, sender) {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== REFRESH_ALARM) return;
-  // Try to refresh data if a claude.ai tab is open
   await fetchUsageViaContentScript();
 });
 
@@ -91,13 +86,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 /**
  * Ask the content script on an active claude.ai tab to fetch usage data.
- * @returns {Promise<Object>} Usage data or error
+ * If the content script isn't loaded, injects it programmatically.
+ * @returns {Promise<Object>}
  */
 async function fetchUsageViaContentScript() {
   try {
     const tabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
     if (tabs.length === 0) {
-      // No claude.ai tab — return cached data
       const cached = await getCachedUsageData();
       if (cached && cached.ok) return cached;
       return { ok: false, error: 'No claude.ai tab open. Open claude.ai to fetch usage data.' };
@@ -107,16 +102,14 @@ async function fetchUsageViaContentScript() {
     let response;
 
     try {
-      // Try sending message to the content script
       response = await chrome.tabs.sendMessage(tabId, { type: 'FETCH_USAGE' });
     } catch (e) {
-      // Content script not loaded — inject it programmatically and retry
+      // Content script not loaded — inject and retry
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
           files: ['content/content-script.js']
         });
-        // Brief wait for the script to initialize
         await new Promise(r => setTimeout(r, 500));
         response = await chrome.tabs.sendMessage(tabId, { type: 'FETCH_USAGE' });
       } catch (retryErr) {
@@ -125,12 +118,10 @@ async function fetchUsageViaContentScript() {
     }
 
     if (response && response.ok) {
-      // Cache the fresh data
       await chrome.storage.local.set({
         cachedUsage: response,
         lastFetchTime: Date.now()
       });
-      // Save a snapshot for history tracking
       await saveUsageSnapshot(response);
     }
     return response || { ok: false, error: 'No response from content script' };
@@ -153,23 +144,9 @@ async function getCachedUsageData() {
 }
 
 /**
- * Cache intercepted usage data (from passive fetch interception).
- * @param {string} url - The API URL that was intercepted
- * @param {Object} data - The parsed JSON response
- * @param {number} timestamp - When the data was captured
- */
-async function cacheUsageData(url, data, timestamp) {
-  const { interceptedData = {} } = await chrome.storage.local.get('interceptedData');
-  // Key by URL path for easy lookup
-  const key = url.replace(/https?:\/\/[^/]+/, '');
-  interceptedData[key] = { data, timestamp };
-  await chrome.storage.local.set({ interceptedData });
-}
-
-/**
  * Save a daily usage snapshot for history tracking.
- * Stores one snapshot per day so users can see trends.
- * @param {Object} usageResponse - The full usage response
+ * Keeps last 90 days.
+ * @param {Object} usageResponse
  */
 async function saveUsageSnapshot(usageResponse) {
   const today = getDateString(new Date());
@@ -182,7 +159,7 @@ async function saveUsageSnapshot(usageResponse) {
     organization: usageResponse.organization
   };
 
-  // Keep last 90 days
+  // Prune entries older than 90 days
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - 90);
   const cutoffStr = getDateString(cutoff);
