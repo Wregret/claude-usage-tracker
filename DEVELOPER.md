@@ -42,7 +42,7 @@ Popup                          Service Worker                Content Scripts
   │                                │
   │── POPUP_FETCH_API_USAGE ─────▸│                          platform.claude.com tab
   │                                │── FETCH_API_USAGE ─────▸│── fetch(/api/.../usage)
-  │                                │◂── { billing, org } ────│
+  │                                │◂── { usage, models, … } ─│
   │◂── api data ──────────────────│
 ```
 
@@ -93,9 +93,9 @@ python3 tests/test_extension.py
 
 ### When platform.claude.com changes its API
 
-1. Open DevTools Network tab on platform.claude.com/settings/billing.
+1. Open DevTools Network tab on platform.claude.com/usage.
 2. Update `content/console-content-script.js`: `fetchApiUsageData()`, `discoverOrgId()`.
-3. Update `popup/popup.js`: `extractApiUsageBars()`, `renderApiModels()`.
+3. Update `popup/popup.js`: `renderApiUsageSummary()`, `renderApiModels()`, `renderApiRateLimits()`.
 
 ### Updating Chart.js
 
@@ -110,6 +110,6 @@ curl -L "https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js" -o lib/c
 | Chat endpoints | `content/content-script.js` | `fetchUsageData()`, `discoverOrgId()` |
 | API endpoints | `content/console-content-script.js` | `fetchApiUsageData()`, `discoverOrgId()` |
 | Chat rendering | `popup/popup.js` | `renderChatData()`, `extractChatUsageBars()` |
-| API rendering | `popup/popup.js` | `renderApiData()`, `extractApiUsageBars()`, `renderApiModels()` |
+| API rendering | `popup/popup.js` | `renderApiData()`, `renderApiUsageSummary()`, `renderApiModels()`, `renderApiRateLimits()` |
 | Pipeline relay | `background/service-worker.js` | `fetchViaContentScript()`, `PIPELINES` |
 | Theme/colors | `popup/popup.css` | `:root` variables, `.bar-ok/warning/danger` |

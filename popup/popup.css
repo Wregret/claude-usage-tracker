@@ -244,6 +244,51 @@ body {
   color: var(--text);
 }
 
+/* ─── Filter Bar ───────────────────────────────────────────── */
+
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.filter-select {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card-bg);
+  color: var(--text);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.filter-select:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* ─── Rate Limit Groups ────────────────────────────────────── */
+
+.rate-limit-group {
+  margin-bottom: 10px;
+}
+
+.rate-limit-group:last-child {
+  margin-bottom: 0;
+}
+
+.rate-limit-model {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
 /* ─── Details (collapsible JSON) ────────────────────────────── */
 
 .clickable {

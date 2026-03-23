@@ -87,9 +87,19 @@
       </div>
 
       <div id="api-usage-section" class="hidden">
+        <!-- Filter bar -->
+        <div class="filter-bar hidden" id="api-filter-bar">
+          <select id="api-filter-workspace" class="filter-select" title="Filter by workspace">
+            <option value="all">All Workspaces</option>
+          </select>
+          <select id="api-filter-key" class="filter-select" title="Filter by API key">
+            <option value="all">All Keys</option>
+          </select>
+        </div>
+
         <div class="card">
           <div class="card-header">
-            <h3>API Spend</h3>
+            <h3>API Usage</h3>
             <span class="plan-badge hidden" id="api-plan-badge"></span>
           </div>
           <div class="card-body">

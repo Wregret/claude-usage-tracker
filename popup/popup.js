@@ -3,7 +3,7 @@
  *
  * Two data pipelines rendered in separate tabs:
  * - Chat: claude.ai usage (percentage bars for 5h/7d utilization)
- * - API: console.anthropic.com usage (spend, model breakdown)
+ * - API: platform.claude.com usage (tokens, model breakdown, rate limits)
  *
  * Data flow (each pipeline):
  *   popup → background → content script → API → back
@@ -15,6 +15,7 @@
   let chatChart = null;
   let apiChart = null;
   let activeTab = 'chat';
+  let lastApiData = null; // stored for filter re-renders
 
   // ─── Initialization ────────────────────────────────────────
 
@@ -184,6 +185,7 @@
   // ─── API Rendering ────────────────────────────────────────
 
   function renderApiData(data) {
+    lastApiData = data;
     document.getElementById('api-error-card').classList.add('hidden');
     document.getElementById('api-usage-section').classList.remove('hidden');
 
@@ -195,109 +197,219 @@
       planBadge.classList.remove('hidden');
     }
 
-    renderUsageBars('api-usage-bars', extractApiUsageBars(data));
-    renderApiModels(data);
+    setupApiFilters(data);
+    renderFilteredApiData();
     renderApiRateLimits(data);
     renderDetails('api-details-json', data);
   }
 
-  function extractApiUsageBars(data) {
-    const bars = [];
+  // ─── API Filters ─────────────────────────────────────────
 
-    // Spend-based: { current, limit } or { used, limit } or { spend, cap }
-    const billing = data.billing || data.usage || {};
+  function setupApiFilters(data) {
+    const filterBar = document.getElementById('api-filter-bar');
+    const wsSelect = document.getElementById('api-filter-workspace');
+    const keySelect = document.getElementById('api-filter-key');
+    const usages = data.usage && data.usage.usages;
 
-    if (billing.spend && typeof billing.spend === 'object') {
-      const s = billing.spend;
-      const current = s.current || s.used || 0;
-      const limit = s.limit || s.cap || s.monthly_limit || 0;
-      if (limit > 0) {
-        bars.push({ label: s.period || 'Monthly Spend', percentage: (current / limit) * 100,
-          valueText: `${formatCurrency(current)} / ${formatCurrency(limit)}`, detail: null });
-      } else {
-        bars.push({ label: 'Spend', percentage: 0,
-          valueText: formatCurrency(current), detail: 'No spending limit set' });
+    if (!usages || Object.keys(usages).length === 0) {
+      filterBar.classList.add('hidden');
+      return;
+    }
+
+    // Collect unique workspaces and keys
+    const workspaces = new Set();
+    const keys = new Map(); // key_id → key_name
+    for (const entries of Object.values(usages)) {
+      for (const e of entries) {
+        if (e.workspace_id) workspaces.add(e.workspace_id);
+        if (e.key_id) keys.set(e.key_id, e.key_name || e.key_id);
       }
     }
 
-    // Utilization-based (same shape as chat)
-    if (bars.length === 0) {
-      for (const [key, val] of Object.entries(billing)) {
-        if (typeof val === 'object' && val !== null && typeof val.utilization === 'number') {
-          bars.push({ label: formatUsageLabel(key), percentage: val.utilization,
-            valueText: `${Math.round(val.utilization)}%`,
-            detail: val.resets_at ? `Resets ${formatResetTime(val.resets_at)}` : null });
-        }
-      }
-    }
+    filterBar.classList.remove('hidden');
 
-    // Generic: walk for { used, limit }
-    if (bars.length === 0) {
-      for (const [key, val] of Object.entries(billing)) {
-        if (typeof val === 'object' && val !== null && 'used' in val && 'limit' in val) {
-          const pct = val.limit > 0 ? (val.used / val.limit) * 100 : 0;
-          bars.push({ label: formatLabel(key), percentage: pct,
-            valueText: `${val.used} / ${val.limit}`, detail: null });
-        }
-      }
+    // Populate workspace dropdown
+    const prevWs = wsSelect.value;
+    wsSelect.innerHTML = '<option value="all">All Workspaces</option>';
+    for (const ws of workspaces) {
+      const opt = document.createElement('option');
+      opt.value = ws;
+      opt.textContent = ws === 'default' ? 'Default' : ws;
+      wsSelect.appendChild(opt);
     }
+    wsSelect.value = prevWs && wsSelect.querySelector(`option[value="${prevWs}"]`) ? prevWs : 'all';
 
-    return bars;
+    // Populate key dropdown
+    const prevKey = keySelect.value;
+    keySelect.innerHTML = '<option value="all">All Keys</option>';
+    for (const [id, name] of keys) {
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = name;
+      keySelect.appendChild(opt);
+    }
+    keySelect.value = prevKey && keySelect.querySelector(`option[value="${prevKey}"]`) ? prevKey : 'all';
+
+    // Wire up change handlers (remove old listeners by replacing elements)
+    wsSelect.onchange = renderFilteredApiData;
+    keySelect.onchange = renderFilteredApiData;
   }
 
-  function renderApiModels(data) {
+  function getFilteredUsageEntries() {
+    if (!lastApiData || !lastApiData.usage || !lastApiData.usage.usages) return [];
+    const wsFilter = document.getElementById('api-filter-workspace').value;
+    const keyFilter = document.getElementById('api-filter-key').value;
+
+    const entries = [];
+    for (const dayEntries of Object.values(lastApiData.usage.usages)) {
+      for (const e of dayEntries) {
+        if (wsFilter !== 'all' && e.workspace_id !== wsFilter) continue;
+        if (keyFilter !== 'all' && e.key_id !== keyFilter) continue;
+        entries.push(e);
+      }
+    }
+    return entries;
+  }
+
+  function renderFilteredApiData() {
+    const entries = getFilteredUsageEntries();
+    renderApiUsageSummary(entries);
+    renderApiModels(entries);
+  }
+
+  // ─── API Usage Summary ──────────────────────────────────
+
+  function renderApiUsageSummary(entries) {
+    const container = document.getElementById('api-usage-bars');
+
+    if (entries.length === 0) {
+      if (lastApiData && lastApiData.organization) {
+        const org = lastApiData.organization;
+        let html = infoRow('Status', 'Active');
+        if (org.billing_type) html += infoRow('Billing', formatLabel(org.billing_type));
+        if (org.free_credits_status) html += infoRow('Credits', formatLabel(org.free_credits_status));
+        if (org.rate_limit_tier) html += infoRow('Tier', formatLabel(org.rate_limit_tier));
+        container.innerHTML = html;
+      } else {
+        container.innerHTML = '<p class="muted">No usage data available.</p>';
+      }
+      return;
+    }
+
+    let totalInput = 0, totalOutput = 0, totalCacheRead = 0, totalCacheWrite = 0, totalWebSearch = 0;
+    for (const e of entries) {
+      totalInput += (e.input || 0);
+      totalOutput += (e.output || 0);
+      totalCacheRead += (e.input_cache_read || 0);
+      totalCacheWrite += (e.input_cache_write || 0) + (e.input_cache_write_1h || 0);
+      totalWebSearch += (e.web_search_count || 0);
+    }
+
+    let html = infoRow('Input Tokens', formatTokens(totalInput));
+    html += infoRow('Output Tokens', formatTokens(totalOutput));
+    if (totalCacheRead > 0) html += infoRow('Cache Read', formatTokens(totalCacheRead));
+    if (totalCacheWrite > 0) html += infoRow('Cache Write', formatTokens(totalCacheWrite));
+    if (totalWebSearch > 0) html += infoRow('Web Searches', totalWebSearch.toLocaleString());
+
+    if (lastApiData && lastApiData.organization) {
+      const org = lastApiData.organization;
+      if (org.billing_type) html += infoRow('Billing', formatLabel(org.billing_type));
+      if (org.free_credits_status === 'available') html += infoRow('Credits', 'Available');
+    }
+
+    container.innerHTML = html;
+  }
+
+  function infoRow(label, value) {
+    return `<div class="info-row">
+      <span class="info-label">${escapeHtml(label)}</span>
+      <span class="info-value">${escapeHtml(String(value))}</span>
+    </div>`;
+  }
+
+  function renderApiModels(entries) {
     const card = document.getElementById('api-models-card');
     const body = document.getElementById('api-models-body');
-    const billing = data.billing || data.usage || {};
-    const models = billing.models || billing.by_model || billing.model_usage;
 
-    if (!Array.isArray(models) || models.length === 0) {
+    if (entries.length === 0) {
       card.classList.add('hidden');
       return;
     }
 
+    // Aggregate actual usage per model
+    const modelUsage = {};
+    for (const e of entries) {
+      const name = e.model_name || 'Unknown';
+      if (!modelUsage[name]) modelUsage[name] = { input: 0, output: 0, cacheRead: 0 };
+      modelUsage[name].input += (e.input || 0);
+      modelUsage[name].output += (e.output || 0);
+      modelUsage[name].cacheRead += (e.input_cache_read || 0);
+    }
+
+    const models = Object.entries(modelUsage);
+    if (models.length === 0) { card.classList.add('hidden'); return; }
+
     card.classList.remove('hidden');
     let html = `<table class="model-table">
-      <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cost</th></tr></thead><tbody>`;
-    for (const m of models) {
-      const name = escapeHtml(m.name || m.model || 'Unknown');
-      const input = m.input_tokens != null ? formatTokens(m.input_tokens) : '-';
-      const output = m.output_tokens != null ? formatTokens(m.output_tokens) : '-';
-      const cost = m.cost != null ? formatCurrency(m.cost) : '-';
-      html += `<tr><td>${name}</td><td class="numeric">${input}</td><td class="numeric">${output}</td><td class="numeric">${cost}</td></tr>`;
+      <thead><tr><th>Model</th><th>Input</th><th>Output</th></tr></thead><tbody>`;
+    for (const [name, usage] of models) {
+      const displayName = escapeHtml(formatModelName(name));
+      html += `<tr><td>${displayName}</td><td class="numeric">${escapeHtml(formatTokens(usage.input))}</td><td class="numeric">${escapeHtml(formatTokens(usage.output))}</td></tr>`;
     }
     html += '</tbody></table>';
     body.innerHTML = html;
   }
 
+  function formatModelName(name) {
+    // "claude-sonnet-4-20250514" → "Claude Sonnet 4"
+    return name.replace(/-\d{8}$/, '').replace(/^claude-/, 'Claude ').replace(/-/g, ' ')
+      .replace(/\b\w/g, c => c.toUpperCase());
+  }
+
   function renderApiRateLimits(data) {
     const card = document.getElementById('api-rate-limit-card');
     const body = document.getElementById('api-rate-limit-body');
-    const limits = data.limits || data.rateLimit || {};
+    const rateLimits = data.rateLimits && data.rateLimits.rate_limits;
 
-    if (!limits || typeof limits !== 'object' || Object.keys(limits).length === 0) {
+    if (!rateLimits || typeof rateLimits !== 'object' || Object.keys(rateLimits).length === 0) {
       card.classList.add('hidden');
       return;
     }
 
     card.classList.remove('hidden');
     let html = '';
-    for (const [key, val] of Object.entries(limits)) {
-      if (typeof val !== 'object') {
+    for (const [model, limits] of Object.entries(rateLimits)) {
+      if (!Array.isArray(limits)) continue;
+      const visibleLimits = limits.filter(l => l.value > 0);
+      if (visibleLimits.length === 0) continue;
+      html += `<div class="rate-limit-group">
+        <div class="rate-limit-model">${escapeHtml(formatLabel(model))}</div>`;
+      for (const lim of visibleLimits) {
         html += `<div class="info-row">
-          <span class="info-label">${escapeHtml(formatLabel(key))}</span>
-          <span class="info-value">${escapeHtml(String(val))}</span>
+          <span class="info-label">${escapeHtml(formatRateLimitType(lim.type))}</span>
+          <span class="info-value">${escapeHtml(formatRateLimitValue(lim.type, lim.value))}</span>
         </div>`;
       }
+      html += '</div>';
     }
     if (html === '') { card.classList.add('hidden'); } else { body.innerHTML = html; }
+  }
+
+  function formatRateLimitType(type) {
+    return type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      .replace('Per Minute', '/min').replace('Per Second', '/sec');
+  }
+
+  function formatRateLimitValue(type, value) {
+    if (type.includes('tokens')) return formatTokens(value);
+    return value.toLocaleString();
   }
 
   function extractApiPlanName(data) {
     if (data.organization) {
       const org = data.organization;
-      if (org.plan) return typeof org.plan === 'string' ? org.plan : org.plan.name || null;
-      if (org.tier) return org.tier;
+      if (org.billing_type) return formatLabel(org.billing_type);
+      if (org.rate_limit_tier) return formatLabel(org.rate_limit_tier);
     }
     return null;
   }
@@ -330,7 +442,8 @@
 
   function renderDetails(elementId, data) {
     const filtered = {};
-    for (const key of ['organization', 'usage', 'rateLimit', 'billing', 'limits', 'settings']) {
+    for (const key of ['organization', 'usage', 'rateLimit', 'rateLimits', 'rateLimitActivities',
+      'models', 'maxMinuteUsage', 'workspaces', 'cost', 'limits']) {
       if (data[key]) filtered[key] = data[key];
     }
     document.getElementById(elementId).textContent = JSON.stringify(filtered, null, 2);

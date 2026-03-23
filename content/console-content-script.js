@@ -1,16 +1,18 @@
 /**
- * Content script for Anthropic Console (platform.claude.com).
+ * Content script for Anthropic Platform (platform.claude.com).
  *
- * Mirrors content-script.js but for API usage data.
- * Discovers the workspace/org ID and fetches billing/usage info.
+ * Fetches API usage/billing data using session cookies.
  *
- * Likely data sources (to be confirmed via DevTools):
- *   GET /api/organizations                  → org list
- *   GET /api/organizations/{id}/usage       → token/cost usage
- *   GET /api/organizations/{id}/limits      → spending limits
- *   GET /api/organizations/{id}/invoices    → billing history
- *   GET /api/billing/usage                  → alternate usage endpoint
- *   GET /api/usage                          → alternate usage endpoint
+ * Data sources (discovered via DevTools):
+ *   GET /api/organizations/{id}                       → org info
+ *   GET /api/organizations/{id}/usage_activities      → token/cost usage
+ *   GET /api/organizations/{id}/rate_limits_v2        → rate limits
+ *   GET /api/organizations/{id}/rate_limit_activities → rate limit history
+ *   GET /api/organizations/{id}/models                → available models
+ *   GET /api/organizations/{id}/max_minute_usage_activities → peak usage
+ *   GET /api/console/organizations/{id}/workspaces    → workspaces
+ *   GET /workspaces/default/cost                      → workspace cost
+ *   GET /settings/limits                              → spending limits
  */
 
 (() => {
@@ -35,7 +37,6 @@
 
   /**
    * Fetch API usage data from platform.claude.com's internal endpoints.
-   * Tries multiple endpoints in parallel, returns whatever succeeds.
    * @returns {Promise<Object>}
    */
   async function fetchApiUsageData() {
@@ -44,8 +45,10 @@
       source: 'api',
       orgId: null,
       organization: null,
-      billing: null,
       usage: null,
+      rateLimits: null,
+      models: null,
+      cost: null,
       limits: null,
       error: null,
       timestamp: Date.now()
@@ -61,15 +64,23 @@
       }
       result.orgId = orgId;
 
-      // Try multiple endpoint patterns — we don't know the exact shape
+      // Date range: first day of current month → day after tomorrow (buffer for timezone)
+      const now = new Date();
+      const startDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+      const bufferDate = new Date(now.getTime() + 2 * 86400000);
+      const endDate = `${bufferDate.getFullYear()}-${String(bufferDate.getMonth() + 1).padStart(2, '0')}-${String(bufferDate.getDate()).padStart(2, '0')}`;
+      const dateParams = `starting_on=${startDate}&ending_before=${endDate}`;
+
       const endpoints = [
         { key: 'organization', path: `/api/organizations/${orgId}` },
-        { key: 'usage', path: `/api/organizations/${orgId}/usage` },
-        { key: 'limits', path: `/api/organizations/${orgId}/limits` },
-        { key: 'billing', path: `/api/organizations/${orgId}/billing` },
-        { key: 'invoices', path: `/api/organizations/${orgId}/invoices` },
-        { key: 'usage_alt', path: '/api/billing/usage' },
-        { key: 'usage_alt2', path: '/api/usage' },
+        { key: 'usage', path: `/api/organizations/${orgId}/usage_activities?${dateParams}` },
+        { key: 'rateLimits', path: `/api/organizations/${orgId}/rate_limits_v2` },
+        { key: 'rateLimitActivities', path: `/api/organizations/${orgId}/rate_limit_activities?${dateParams}` },
+        { key: 'models', path: `/api/organizations/${orgId}/models` },
+        { key: 'maxMinuteUsage', path: `/api/organizations/${orgId}/max_minute_usage_activities?${dateParams}` },
+        { key: 'workspaces', path: `/api/console/organizations/${orgId}/workspaces` },
+        { key: 'cost', path: '/workspaces/default/cost' },
+        { key: 'limits', path: '/settings/limits' },
       ];
 
       const results = await Promise.allSettled(
@@ -79,17 +90,20 @@
       for (const r of results) {
         if (r.status !== 'fulfilled' || !r.value.data) continue;
         const { key, data } = r.value;
-        if (key === 'organization') result.organization = data;
-        else if (key === 'limits') result.limits = data;
-        else if (key === 'billing') result.billing = data;
-        else if (key.startsWith('usage')) {
-          // Merge usage data (first one wins)
-          if (!result.usage) result.usage = data;
+        switch (key) {
+          case 'organization': result.organization = data; break;
+          case 'usage': result.usage = data; break;
+          case 'rateLimits': result.rateLimits = data; break;
+          case 'rateLimitActivities': result.rateLimitActivities = data; break;
+          case 'models': result.models = data; break;
+          case 'maxMinuteUsage': result.maxMinuteUsage = data; break;
+          case 'workspaces': result.workspaces = data; break;
+          case 'cost': result.cost = data; break;
+          case 'limits': result.limits = data; break;
         }
-        else if (key === 'invoices') result.billing = { ...result.billing, invoices: data };
       }
 
-      result.ok = !!(result.usage || result.billing || result.limits || result.organization);
+      result.ok = !!(result.usage || result.rateLimits || result.organization || result.cost || result.limits);
       if (!result.ok) {
         result.error = 'Could not fetch API usage data. Endpoints may have changed.';
       }
@@ -103,11 +117,11 @@
   // ─── Org ID Discovery ────────────────────────────────────
 
   /**
-   * Discover the org/workspace ID on platform.claude.com.
+   * Discover the org ID on platform.claude.com.
    * @returns {Promise<string|null>}
    */
   async function discoverOrgId() {
-    // Method 1: Fetch the organizations list
+    // Method 1: Fetch the organizations list, pick the one with "api" capability
     try {
       const resp = await fetch('/api/organizations', {
         credentials: 'include',
@@ -116,7 +130,11 @@
       if (resp.ok) {
         const data = await resp.json();
         if (Array.isArray(data) && data.length > 0) {
-          return data[0].uuid || data[0].id || null;
+          const apiOrg = data.find(o =>
+            Array.isArray(o.capabilities) && o.capabilities.some(c => c.includes('api'))
+          );
+          const org = apiOrg || data[0];
+          return org.uuid || org.id || null;
         }
         if (data.uuid || data.id) {
           return data.uuid || data.id;
@@ -126,11 +144,11 @@
       // Continue to fallback
     }
 
-    // Method 2: Parse org/workspace ID from URL
+    // Method 2: Parse org ID from URL
     const urlMatch = window.location.href.match(/\/(organizations|workspaces)\/([a-f0-9-]{36})/i);
     if (urlMatch) return urlMatch[2];
 
-    // Method 3: Look in page data attributes or meta tags
+    // Method 3: Check meta tags
     const meta = document.querySelector('meta[name="organization-id"], meta[name="workspace-id"]');
     if (meta) return meta.getAttribute('content');
 
@@ -139,11 +157,6 @@
 
   // ─── Helpers ──────────────────────────────────────────────
 
-  /**
-   * Fetch an API endpoint. Returns parsed JSON or null on failure.
-   * @param {string} path
-   * @returns {Promise<Object|null>}
-   */
   async function safeFetch(path) {
     try {
       const resp = await fetch(path, {
