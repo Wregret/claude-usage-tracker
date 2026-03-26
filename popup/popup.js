@@ -454,8 +454,13 @@
   async function loadHistory(tab) {
     const msgType = tab === 'chat' ? 'POPUP_GET_HISTORY' : 'POPUP_GET_API_HISTORY';
     const result = await sendMessage({ type: msgType });
-    if (!result || !result.ok || Object.keys(result.history || {}).length < 2) {
+    const history = (result && result.history) || {};
+    const dates = Object.keys(history).sort();
+
+    if (!result || !result.ok || dates.length === 0) {
       document.getElementById(`${tab}-history-section`).classList.add('hidden');
+      if (tab === 'chat' && chatChart) { chatChart.destroy(); chatChart = null; }
+      if (tab === 'api' && apiChart) { apiChart.destroy(); apiChart = null; }
       return;
     }
 
@@ -464,14 +469,14 @@
     if (tab === 'chat' && chatChart) { chatChart.destroy(); chatChart = null; }
     if (tab === 'api' && apiChart) { apiChart.destroy(); apiChart = null; }
 
-    const dates = Object.keys(result.history).sort();
     const labels = dates.map(d => {
       const parts = d.split('-');
       const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       return `${months[parseInt(parts[1]) - 1]} ${parseInt(parts[2])}`;
     });
 
-    const dataPoints = dates.map(d => extractSnapshotValue(result.history[d], tab));
+    const dataPoints = dates.map(d => extractSnapshotValue(history[d], tab));
+    const singlePoint = dataPoints.length === 1;
 
     const ctx = document.getElementById(`${tab}-history-chart`).getContext('2d');
     const chart = new Chart(ctx, {
@@ -484,7 +489,8 @@
           borderColor: '#d97706',
           backgroundColor: 'rgba(217, 119, 6, 0.1)',
           fill: true,
-          tension: 0.3
+          tension: 0.3,
+          pointRadius: singlePoint ? 4 : 2
         }]
       },
       options: {
@@ -508,24 +514,59 @@
 
   function extractSnapshotValue(snap, tab) {
     if (!snap) return 0;
-    const u = snap.usage || {};
+    if (tab === 'chat') return extractChatHistoryPercent(snap);
+    return extractApiHistoryValue(snap);
+  }
 
-    // Chat: utilization percentage
-    if (tab === 'chat') {
-      if (u.five_hour && typeof u.five_hour.utilization === 'number') return u.five_hour.utilization;
-      for (const val of Object.values(u)) {
-        if (typeof val === 'object' && val !== null && typeof val.utilization === 'number') return val.utilization;
+  function extractChatHistoryPercent(snap) {
+    const usage = snap.usage || {};
+    const candidates = [];
+
+    // Prefer known windows first, then include any additional utilization windows.
+    for (const key of ['five_hour', 'seven_day']) {
+      const val = usage[key];
+      if (val && typeof val.utilization === 'number' && Number.isFinite(val.utilization)) {
+        candidates.push(val.utilization);
+      }
+    }
+    for (const val of Object.values(usage)) {
+      if (typeof val === 'object' && val !== null &&
+          typeof val.utilization === 'number' && Number.isFinite(val.utilization)) {
+        candidates.push(val.utilization);
       }
     }
 
-    // API: spend or utilization
-    const billing = snap.billing || {};
-    if (billing.spend && typeof billing.spend.current === 'number') return billing.spend.current;
-    for (const val of Object.values(u)) {
-      if (typeof val === 'object' && val !== null && typeof val.utilization === 'number') return val.utilization;
+    // Fallback for responses that only expose rate_limit_status.
+    const rl = snap.rateLimit || {};
+    if (typeof rl.percentage_used === 'number' && Number.isFinite(rl.percentage_used)) {
+      candidates.push(rl.percentage_used);
+    } else if (typeof rl.remaining === 'number' && Number.isFinite(rl.remaining) &&
+               typeof rl.limit === 'number' && Number.isFinite(rl.limit) && rl.limit > 0) {
+      const pct = ((rl.limit - rl.remaining) / rl.limit) * 100;
+      candidates.push(pct);
     }
 
+    if (candidates.length === 0) return 0;
+    return clampPercent(Math.max(...candidates));
+  }
+
+  function extractApiHistoryValue(snap) {
+    const usage = snap.usage || {};
+    const billing = snap.billing || {};
+    if (billing.spend && typeof billing.spend.current === 'number' && Number.isFinite(billing.spend.current)) {
+      return billing.spend.current;
+    }
+    for (const val of Object.values(usage)) {
+      if (typeof val === 'object' && val !== null &&
+          typeof val.utilization === 'number' && Number.isFinite(val.utilization)) {
+        return val.utilization;
+      }
+    }
     return 0;
+  }
+
+  function clampPercent(value) {
+    return Math.min(100, Math.max(0, value));
   }
 
   // ─── UI Helpers ────────────────────────────────────────────
