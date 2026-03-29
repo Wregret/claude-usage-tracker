@@ -135,8 +135,6 @@ async function fetchViaContentScript(pipeline) {
   try {
     const tabs = await chrome.tabs.query({ url: cfg.tabUrl });
     if (tabs.length === 0) {
-      const cached = await getCached(pipeline);
-      if (cached && cached.ok) return cached;
       return { ok: false, error: cfg.noTabError };
     }
 

@@ -91,9 +91,13 @@
     const parts = [];
     if (chatData && chatData.ok) {
       parts.push('Chat: ' + formatTimeAgo(chatData.timestamp || Date.now()));
+    } else if (chatData && chatData.error) {
+      parts.push('Chat: failed');
     }
     if (apiData && apiData.ok) {
       parts.push('API: ' + formatTimeAgo(apiData.timestamp || Date.now()));
+    } else if (apiData && apiData.error) {
+      parts.push('API: failed');
     }
     setStatus(parts.length > 0 ? parts.join(' | ') : 'No data available');
   }
@@ -597,11 +601,8 @@
   function showTabError(tab, msg) {
     const card = document.getElementById(`${tab}-error-card`);
     const text = document.getElementById(`${tab}-error-text`);
-    // Only show error if no data is already visible
-    if (document.getElementById(`${tab}-usage-section`).classList.contains('hidden')) {
-      card.classList.remove('hidden');
-      text.textContent = msg;
-    }
+    card.classList.remove('hidden');
+    text.textContent = msg;
   }
 
   // ─── Formatting Helpers ────────────────────────────────────
