@@ -59,6 +59,8 @@
   async function refreshData() {
     setStatus('Fetching...');
     setRefreshSpinning(true);
+    document.getElementById('chat-error-card').classList.add('hidden');
+    document.getElementById('api-error-card').classList.add('hidden');
 
     const [chatResult, apiResult] = await Promise.allSettled([
       sendMessage({ type: 'POPUP_FETCH_USAGE' }),
