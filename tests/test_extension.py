@@ -157,6 +157,24 @@ class TestServiceWorker(unittest.TestCase):
         self.assertIn("chrome.alarms.create", self.code)
         self.assertIn("chrome.alarms.onAlarm.addListener", self.code)
 
+    def test_fetches_directly_with_credentials(self):
+        self.assertIn("credentials: 'include'", self.code)
+        self.assertIn("fetchDirect", self.code)
+
+    def test_falls_back_to_content_script(self):
+        self.assertIn("fetchViaContentScript", self.code)
+
+    def test_updates_badge(self):
+        self.assertIn("chrome.action.setBadgeText", self.code)
+        self.assertIn("chrome.action.setBadgeBackgroundColor", self.code)
+
+    def test_chat_history_stores_daily_max(self):
+        self.assertIn("Math.max", self.code)
+        self.assertIn("windows", self.code)
+
+    def test_skips_discarded_tabs(self):
+        self.assertIn("discarded", self.code)
+
     def test_has_message_listener(self):
         self.assertIn("chrome.runtime.onMessage.addListener", self.code)
 
@@ -519,13 +537,16 @@ class TestFileStructure(unittest.TestCase):
 
 class TestPrivacy(unittest.TestCase):
 
-    def test_service_worker_no_fetch(self):
-        with open(ROOT / "manifest.json") as f:
-            m = json.load(f)
-        with open(ROOT / m["background"]["service_worker"]) as f:
-            code = f.read()
-        self.assertEqual(len(re.findall(r'\bfetch\s*\(', code)), 0,
-            "Service worker must not call fetch()")
+    def test_no_third_party_urls(self):
+        """All hardcoded URLs must point at Claude's own origins."""
+        allowed = ("https://claude.ai", "https://platform.claude.com")
+        for path in ["background/service-worker.js", "popup/popup.js",
+                     "content/content-script.js", "content/console-content-script.js"]:
+            with open(ROOT / path) as f:
+                code = f.read()
+            for url in re.findall(r'https?://[^\s\'"`)]+', code):
+                self.assertTrue(url.startswith(allowed),
+                    f"{path} references non-Claude URL: {url}")
 
     def test_no_external_scripts_in_popup(self):
         with open(ROOT / "popup" / "popup.html") as f:

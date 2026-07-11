@@ -28,7 +28,7 @@ The extension communicates **only** with the following origins, using your exist
 - `https://claude.ai` — to fetch chat usage data
 - `https://platform.claude.com` — to fetch API usage and rate limit data
 
-These are same-origin requests made by content scripts running on those pages. No data is sent to any third-party server, external API, or analytics service.
+These requests are made by the extension's background service worker (or, as a fallback, by content scripts running on those pages) using your existing browser session. No data is sent to any third-party server, external API, or analytics service.
 
 ## Permissions
 

@@ -16,12 +16,15 @@
   let apiChart = null;
   let activeTab = 'chat';
   let lastApiData = null; // stored for filter re-renders
+  let chatLastUpdated = null; // epoch ms of the data currently on screen
+  let apiLastUpdated = null;
 
   // ─── Initialization ────────────────────────────────────────
 
   document.addEventListener('DOMContentLoaded', () => {
     setupTabs();
     setupRefreshButton();
+    setupOpenSiteButtons();
     setupDetailsToggle('chat-details-toggle', 'chat-details-body', 'chat-toggle-arrow');
     setupDetailsToggle('api-details-toggle', 'api-details-body', 'api-toggle-arrow');
     loadData();
@@ -50,8 +53,14 @@
       sendMessage({ type: 'POPUP_GET_CACHED' }),
       sendMessage({ type: 'POPUP_GET_CACHED_API' })
     ]);
-    if (chatCached && chatCached.ok) renderChatData(chatCached);
-    if (apiCached && apiCached.ok) renderApiData(apiCached);
+    if (chatCached && chatCached.ok) {
+      chatLastUpdated = Date.now() - (chatCached.cacheAge || 0);
+      renderChatData(chatCached);
+    }
+    if (apiCached && apiCached.ok) {
+      apiLastUpdated = Date.now() - (apiCached.cacheAge || 0);
+      renderApiData(apiCached);
+    }
 
     await refreshData();
   }
@@ -70,16 +79,19 @@
     // Handle chat result
     const chatData = chatResult.status === 'fulfilled' ? chatResult.value : null;
     if (chatData && chatData.ok) {
+      chatLastUpdated = chatData.timestamp || Date.now();
       renderChatData(chatData);
-    } else if (chatData && chatData.error) {
+    } else if (chatData && chatData.error && chatLastUpdated === null) {
+      // Only show the error card when there is no data on screen
       showTabError('chat', chatData.error);
     }
 
     // Handle API result
     const apiData = apiResult.status === 'fulfilled' ? apiResult.value : null;
     if (apiData && apiData.ok) {
+      apiLastUpdated = apiData.timestamp || Date.now();
       renderApiData(apiData);
-    } else if (apiData && apiData.error) {
+    } else if (apiData && apiData.error && apiLastUpdated === null) {
       showTabError('api', apiData.error);
     }
 
@@ -92,14 +104,18 @@
   function updateStatus(chatData, apiData) {
     const parts = [];
     if (chatData && chatData.ok) {
-      parts.push('Chat: ' + formatTimeAgo(chatData.timestamp || Date.now()));
+      parts.push('Chat: updated ' + formatTimeAgo(chatData.timestamp || Date.now()));
+    } else if (chatLastUpdated !== null) {
+      parts.push(`Chat: cached ${formatTimeAgo(chatLastUpdated)}`);
     } else if (chatData && chatData.error) {
-      parts.push('Chat: failed');
+      parts.push('Chat: unavailable');
     }
     if (apiData && apiData.ok) {
-      parts.push('API: ' + formatTimeAgo(apiData.timestamp || Date.now()));
+      parts.push('API: updated ' + formatTimeAgo(apiData.timestamp || Date.now()));
+    } else if (apiLastUpdated !== null) {
+      parts.push(`API: cached ${formatTimeAgo(apiLastUpdated)}`);
     } else if (apiData && apiData.error) {
-      parts.push('API: failed');
+      parts.push('API: unavailable');
     }
     setStatus(parts.length > 0 ? parts.join(' | ') : 'No data available');
   }
@@ -126,18 +142,26 @@
   function extractChatUsageBars(data) {
     const bars = [];
 
-    // Primary: usage with { utilization, resets_at } entries
+    // Primary: usage with { utilization, resets_at } entries.
+    // Scans one nested level too, so windows Claude adds later
+    // (e.g. per-model usage) show up without a code change.
     if (data.usage) {
-      for (const [key, val] of Object.entries(data.usage)) {
-        if (typeof val === 'object' && val !== null && typeof val.utilization === 'number') {
-          bars.push({
-            label: formatUsageLabel(key),
-            percentage: val.utilization,
-            valueText: `${Math.round(val.utilization)}%`,
-            detail: val.resets_at ? `Resets ${formatResetTime(val.resets_at)}` : null
-          });
+      const collect = (obj, prefix) => {
+        for (const [key, val] of Object.entries(obj)) {
+          if (!val || typeof val !== 'object') continue;
+          if (typeof val.utilization === 'number' && Number.isFinite(val.utilization)) {
+            bars.push({
+              label: formatUsageLabel(prefix ? `${prefix} ${key}` : key),
+              percentage: val.utilization,
+              valueText: `${Math.round(val.utilization)}%`,
+              detail: val.resets_at ? `Resets ${formatResetTime(val.resets_at)}` : null
+            });
+          } else if (!prefix) {
+            collect(val, key);
+          }
         }
-      }
+      };
+      collect(data.usage, '');
     }
 
     // Fallback: rateLimit shapes
@@ -243,7 +267,7 @@
       opt.textContent = ws === 'default' ? 'Default' : ws;
       wsSelect.appendChild(opt);
     }
-    wsSelect.value = prevWs && wsSelect.querySelector(`option[value="${prevWs}"]`) ? prevWs : 'all';
+    wsSelect.value = prevWs && Array.from(wsSelect.options).some(o => o.value === prevWs) ? prevWs : 'all';
 
     // Populate key dropdown
     const prevKey = keySelect.value;
@@ -254,7 +278,7 @@
       opt.textContent = name;
       keySelect.appendChild(opt);
     }
-    keySelect.value = prevKey && keySelect.querySelector(`option[value="${prevKey}"]`) ? prevKey : 'all';
+    keySelect.value = prevKey && Array.from(keySelect.options).some(o => o.value === prevKey) ? prevKey : 'all';
 
     // Wire up change handlers (remove old listeners by replacing elements)
     wsSelect.onchange = renderFilteredApiData;
@@ -481,36 +505,51 @@
       return `${months[parseInt(parts[1]) - 1]} ${parseInt(parts[2])}`;
     });
 
-    const dataPoints = dates.map(d => extractSnapshotValue(history[d], tab));
-    const singlePoint = dataPoints.length === 1;
-
     const ctx = document.getElementById(`${tab}-history-chart`).getContext('2d');
+    const singlePoint = dates.length === 1;
+
+    let datasets;
+    let yOptions;
+    if (tab === 'chat') {
+      datasets = buildChatDatasets(history, dates, singlePoint);
+      yOptions = {
+        beginAtZero: true,
+        max: 100,
+        title: { display: true, text: 'Usage %', font: { size: 10 } },
+        ticks: { font: { size: 9 } }
+      };
+    } else {
+      datasets = [{
+        label: 'Tokens',
+        data: dates.map(d => extractApiHistoryTokens(history[d], d)),
+        borderColor: '#d97706',
+        backgroundColor: 'rgba(217, 119, 6, 0.1)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: singlePoint ? 4 : 2
+      }];
+      yOptions = {
+        beginAtZero: true,
+        title: { display: true, text: 'Tokens', font: { size: 10 } },
+        ticks: { font: { size: 9 }, callback: (v) => formatTokens(v) }
+      };
+    }
+
     const chart = new Chart(ctx, {
       type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          label: tab === 'chat' ? 'Usage %' : 'Usage',
-          data: dataPoints,
-          borderColor: '#d97706',
-          backgroundColor: 'rgba(217, 119, 6, 0.1)',
-          fill: true,
-          tension: 0.3,
-          pointRadius: singlePoint ? 4 : 2
-        }]
-      },
+      data: { labels, datasets },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
+        plugins: {
+          legend: {
+            display: datasets.length > 1,
+            labels: { font: { size: 9 }, boxWidth: 12 }
+          }
+        },
         scales: {
           x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
-          y: {
-            beginAtZero: true,
-            max: tab === 'chat' ? 100 : undefined,
-            title: { display: true, text: tab === 'chat' ? 'Usage %' : 'Usage', font: { size: 10 } },
-            ticks: { font: { size: 9 } }
-          }
+          y: yOptions
         }
       }
     });
@@ -518,57 +557,72 @@
     if (tab === 'chat') chatChart = chart; else apiChart = chart;
   }
 
-  function extractSnapshotValue(snap, tab) {
+  const CHART_COLORS = ['#d97706', '#2563eb', '#16a34a', '#9333ea', '#dc2626'];
+
+  /**
+   * One dataset per utilization window (e.g. 5 Hour, 7 Day).
+   * Supports both new snapshots ({windows}) and old ones ({usage, rateLimit}).
+   */
+  function buildChatDatasets(history, dates, singlePoint) {
+    const perDate = dates.map(d => normalizeChatWindows(history[d]));
+
+    const keys = new Set();
+    for (const windows of perDate) {
+      for (const key of Object.keys(windows)) keys.add(key);
+    }
+
+    return Array.from(keys).sort().slice(0, CHART_COLORS.length).map((key, i) => ({
+      label: formatUsageLabel(key),
+      data: perDate.map(w => (typeof w[key] === 'number' ? clampPercent(w[key]) : null)),
+      borderColor: CHART_COLORS[i],
+      backgroundColor: CHART_COLORS[i] + '1a',
+      fill: i === 0,
+      tension: 0.3,
+      spanGaps: true,
+      pointRadius: singlePoint ? 4 : 2
+    }));
+  }
+
+  /** @returns {Object} { windowKey: utilization% } for a snapshot of either format */
+  function normalizeChatWindows(snap) {
+    if (!snap) return {};
+    if (snap.windows && typeof snap.windows === 'object') return snap.windows;
+
+    // Old-format snapshot: derive windows from the raw usage/rateLimit data
+    const windows = {};
+    const usage = snap.usage || {};
+    for (const [key, val] of Object.entries(usage)) {
+      if (val && typeof val === 'object' &&
+          typeof val.utilization === 'number' && Number.isFinite(val.utilization)) {
+        windows[key] = val.utilization;
+      }
+    }
+    if (Object.keys(windows).length === 0) {
+      const rl = snap.rateLimit || {};
+      if (typeof rl.percentage_used === 'number' && Number.isFinite(rl.percentage_used)) {
+        windows.rate_limit = rl.percentage_used;
+      } else if (typeof rl.remaining === 'number' && typeof rl.limit === 'number' && rl.limit > 0) {
+        windows.rate_limit = ((rl.limit - rl.remaining) / rl.limit) * 100;
+      }
+    }
+    return windows;
+  }
+
+  /** Total tokens for a date, supporting old and new snapshot formats. */
+  function extractApiHistoryTokens(snap, date) {
     if (!snap) return 0;
-    if (tab === 'chat') return extractChatHistoryPercent(snap);
-    return extractApiHistoryValue(snap);
-  }
+    if (snap.tokens && typeof snap.tokens.total === 'number') return snap.tokens.total;
 
-  function extractChatHistoryPercent(snap) {
-    const usage = snap.usage || {};
-    const candidates = [];
-
-    // Prefer known windows first, then include any additional utilization windows.
-    for (const key of ['five_hour', 'seven_day']) {
-      const val = usage[key];
-      if (val && typeof val.utilization === 'number' && Number.isFinite(val.utilization)) {
-        candidates.push(val.utilization);
-      }
+    // Old-format snapshot: sum this date's entries from the raw usage payload
+    const usages = snap.usage && snap.usage.usages;
+    const entries = usages && usages[date];
+    if (!Array.isArray(entries)) return 0;
+    let total = 0;
+    for (const e of entries) {
+      total += (e.input || 0) + (e.output || 0) + (e.input_cache_read || 0) +
+               (e.input_cache_write || 0) + (e.input_cache_write_1h || 0);
     }
-    for (const val of Object.values(usage)) {
-      if (typeof val === 'object' && val !== null &&
-          typeof val.utilization === 'number' && Number.isFinite(val.utilization)) {
-        candidates.push(val.utilization);
-      }
-    }
-
-    // Fallback for responses that only expose rate_limit_status.
-    const rl = snap.rateLimit || {};
-    if (typeof rl.percentage_used === 'number' && Number.isFinite(rl.percentage_used)) {
-      candidates.push(rl.percentage_used);
-    } else if (typeof rl.remaining === 'number' && Number.isFinite(rl.remaining) &&
-               typeof rl.limit === 'number' && Number.isFinite(rl.limit) && rl.limit > 0) {
-      const pct = ((rl.limit - rl.remaining) / rl.limit) * 100;
-      candidates.push(pct);
-    }
-
-    if (candidates.length === 0) return 0;
-    return clampPercent(Math.max(...candidates));
-  }
-
-  function extractApiHistoryValue(snap) {
-    const usage = snap.usage || {};
-    const billing = snap.billing || {};
-    if (billing.spend && typeof billing.spend.current === 'number' && Number.isFinite(billing.spend.current)) {
-      return billing.spend.current;
-    }
-    for (const val of Object.values(usage)) {
-      if (typeof val === 'object' && val !== null &&
-          typeof val.utilization === 'number' && Number.isFinite(val.utilization)) {
-        return val.utilization;
-      }
-    }
-    return 0;
+    return total;
   }
 
   function clampPercent(value) {
@@ -579,6 +633,14 @@
 
   function setupRefreshButton() {
     document.getElementById('refresh-btn').addEventListener('click', refreshData);
+  }
+
+  function setupOpenSiteButtons() {
+    for (const btn of document.querySelectorAll('.open-site-btn')) {
+      btn.addEventListener('click', () => {
+        chrome.tabs.create({ url: btn.dataset.url });
+      });
+    }
   }
 
   function setupDetailsToggle(toggleId, bodyId, arrowId) {
@@ -624,7 +686,11 @@
       const diffMs = d - new Date();
       if (diffMs < 0) return 'now';
       if (diffMs < 3600000) return `in ${Math.ceil(diffMs / 60000)}m`;
-      if (diffMs < 86400000) return `in ${Math.ceil(diffMs / 3600000)}h`;
+      if (diffMs < 86400000) {
+        const hours = Math.floor(diffMs / 3600000);
+        const mins = Math.round((diffMs % 3600000) / 60000);
+        return mins > 0 ? `in ${hours}h ${mins}m` : `in ${hours}h`;
+      }
       return d.toLocaleDateString();
     } catch (e) {
       return String(resetAt);
@@ -646,7 +712,7 @@
         break;
       }
     }
-    return label.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    return label.replace(/[_.-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   }
 
   function escapeHtml(str) {
@@ -659,7 +725,13 @@
 
   function sendMessage(msg) {
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage(msg, (response) => { resolve(response); });
+      chrome.runtime.sendMessage(msg, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve(response);
+      });
     });
   }
 

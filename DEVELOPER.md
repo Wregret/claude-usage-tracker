@@ -30,26 +30,25 @@ claude-usage-tracker/
 
 ## Architecture
 
-Two parallel data pipelines share the same service worker relay pattern:
+Two parallel data pipelines share the same service worker pattern:
 
 ```
-Popup                          Service Worker                Content Scripts
+Popup                          Service Worker
   │                                │
-  │── POPUP_FETCH_USAGE ─────────▸│                          claude.ai tab
-  │                                │── FETCH_USAGE ─────────▸│── fetch(/api/.../usage)
-  │                                │◂── { usage, org } ──────│
+  │── POPUP_FETCH_USAGE ─────────▸│── fetch(claude.ai/api/.../usage)  [direct, cookies]
+  │                                │     └─ on failure: FETCH_USAGE ─▸ content script in open tab
   │◂── chat data ─────────────────│
   │                                │
-  │── POPUP_FETCH_API_USAGE ─────▸│                          platform.claude.com tab
-  │                                │── FETCH_API_USAGE ─────▸│── fetch(/api/.../usage)
-  │                                │◂── { usage, models, … } ─│
+  │── POPUP_FETCH_API_USAGE ─────▸│── fetch(platform.claude.com/api/...)  [direct, cookies]
+  │                                │     └─ on failure: FETCH_API_USAGE ─▸ content script
   │◂── api data ──────────────────│
 ```
 
 **Key design decisions:**
-- **Two content scripts** — one per origin. Each fetches with the user's session cookies.
-- **Service worker is a relay + cache** — never calls fetch() itself. Uses a shared `PIPELINES` config to avoid duplicating logic.
+- **Direct-first fetching** — the service worker fetches the internal APIs with `credentials: 'include'` (host permissions grant credentialed requests), so no tab needs to be open and the badge/alarm refresh work in the background.
+- **Content-script fallback** — if a direct fetch fails (e.g. bot protection), the worker messages a content script in an open tab; two content scripts, one per origin.
 - **Programmatic injection** — injects content scripts via `chrome.scripting.executeScript` if not already loaded.
+- **Icon badge** — max chat utilization % shown via `chrome.action.setBadgeText` after each successful chat fetch.
 - **No importScripts** — all dependencies inlined in the service worker.
 - **Sender validation** — only accepts messages from its own extension ID.
 - **Tabbed popup** — Chat and API usage in separate tabs, fetched in parallel.
